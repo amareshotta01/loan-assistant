@@ -1,0 +1,314 @@
+"""
+guardrails.py
+=============
+Guardrails AGENT for Loan Approval & Credit Risk Assistant
+
+What this does:
+- Acts as an autonomous agent at Step 2 (input) and Step 7 (output)
+- Detects harmful content: profanity, hate speech, abuse, self-harm
+- Detects and redacts PII: Aadhaar, PAN, phone, email, etc.
+- Makes its own decision on what action to take (that's the agent part)
+
+How it connects:
+- Member 1 imports this into main.py (FastAPI)
+- Called BEFORE message goes to LLM (input guard)
+- Called AFTER LLM responds (output guard)
+"""
+
+import re
+
+
+# ============================================================
+#  SECTION 1 — PII PATTERNS
+#  These are the personal data patterns we detect and hide
+# ============================================================
+
+PII_PATTERNS = {
+    "aadhaar":      (r"\b[2-9]{1}[0-9]{3}\s?[0-9]{4}\s?[0-9]{4}\b",              "[AADHAAR REDACTED]"),
+    "pan":          (r"\b[A-Z]{5}[0-9]{4}[A-Z]{1}\b",                             "[PAN REDACTED]"),
+    "phone":        (r"\b(\+91[\-\s]?)?[6-9]\d{9}\b",                             "[PHONE REDACTED]"),
+    "email":        (r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Z|a-z]{2,}\b",   "[EMAIL REDACTED]"),
+    "credit_card":  (r"\b(?:\d[ -]?){13,16}\b",                                   "[CARD REDACTED]"),
+    "bank_account": (r"\b[0-9]{9,18}\b",                                           "[ACCOUNT REDACTED]"),
+    "ifsc":         (r"\b[A-Z]{4}0[A-Z0-9]{6}\b",                                 "[IFSC REDACTED]"),
+    "dob":          (r"\b(0?[1-9]|[12][0-9]|3[01])[\/\-](0?[1-9]|1[0-2])[\/\-]\d{2,4}\b", "[DOB REDACTED]"),
+    "passport":     (r"\b[A-PR-WY][1-9]\d\s?\d{4}[1-9]\b",                        "[PASSPORT REDACTED]"),
+    "voter_id":     (r"\b[A-Z]{3}[0-9]{7}\b",                                     "[VOTERID REDACTED]"),
+}
+
+
+# ============================================================
+#  SECTION 2 — HARMFUL CONTENT PATTERNS
+#  These are the bad content types we detect
+# ============================================================
+
+HARMFUL_PATTERNS = {
+
+    "profanity": [
+        r"\b(fuck|shit|bastard|bitch|asshole|damn|crap|dick|cock|whore|slut)\b",
+        r"\b(bc|mc|bkl|bhenchod|madarchod|chutiya|saala|harami)\b",
+    ],
+
+    "hate_speech": [
+        r"\b(nigger|faggot|retard|jihadi)\b",
+        r"\b(all\s+(muslims?|hindus?|christians?|sikhs?)\s+are\s+(bad|evil|terrorist|dirty))\b",
+        r"\b(kill\s+all\s+\w+)\b",
+    ],
+
+    "abuse": [
+        r"\b(i.?ll\s+(kill|hurt|destroy|attack)\s+(you|your))\b",
+        r"\b(you\s+(are|r)\s+(stupid|idiot|moron|dumb|useless|worthless))\b",
+        r"\b(go\s+(die|to\s+hell))\b",
+        r"\b(shut\s+the\s+fuck\s+up)\b",
+    ],
+
+    "self_harm": [
+        r"\b(kill\s+myself|suicide|end\s+my\s+life|want\s+to\s+die)\b",
+        r"\b(no\s+reason\s+to\s+live|don.?t\s+want\s+to\s+live)\b",
+        r"\b(overdose|hang\s+myself|jump\s+off)\b",
+        r"\b(self[\s\-]harm|cut\s+myself)\b",
+    ],
+}
+
+
+# ============================================================
+#  SECTION 3 — SAFE RESPONSE TEMPLATES
+#  What to say to user when something is blocked
+# ============================================================
+
+SAFE_RESPONSES = {
+    "profanity": (
+        "⚠️ Your message contains inappropriate language. "
+        "Please keep the conversation professional so I can assist "
+        "you with your loan application."
+    ),
+    "hate_speech": (
+        "🚫 Your message contains content that violates our guidelines. "
+        "We provide equal, respectful service to all applicants. "
+        "Please rephrase your message."
+    ),
+    "abuse": (
+        "⚠️ Your message contains abusive content. "
+        "Our team is here to help you. Please communicate respectfully "
+        "so we can process your loan application."
+    ),
+    "self_harm": (
+        "💙 It sounds like you are going through a very difficult time. "
+        "Your wellbeing matters more than any loan. "
+        "Please reach out for help:\n"
+        "  • iCall (India): 9152987821\n"
+        "  • Vandrevala Foundation: 1860-2662-345\n"
+        "We are here for you when you are ready to continue."
+    ),
+    "pii": (
+        "🔒 Sensitive personal information was detected and hidden "
+        "for your security. Please use our secure document upload "
+        "instead of sharing IDs in chat."
+    ),
+}
+
+
+# ============================================================
+#  SECTION 4 — GUARDRAIL AGENT CORE LOGIC
+#  This is where the agent "decides" what to do
+# ============================================================
+
+def _agent_decide(text: str) -> str:
+    """
+    AGENT DECISION FUNCTION
+    -----------------------
+    Reads the text and autonomously decides which category it belongs to.
+    This is the 'brain' of the guardrail agent.
+
+    Decision Priority:
+    1. self_harm   (highest — human safety first)
+    2. hate_speech
+    3. abuse
+    4. profanity
+    5. pii         (redact but allow)
+    6. clean       (pass through)
+    """
+    lower = text.lower()
+
+    for category in ["self_harm", "hate_speech", "abuse", "profanity"]:
+        for pattern in HARMFUL_PATTERNS[category]:
+            if re.search(pattern, lower, re.IGNORECASE):
+                return category
+
+    for pii_type, (pattern, _) in PII_PATTERNS.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            return "pii"
+
+    return "clean"
+
+
+def _agent_act(text: str, category: str, mode: str) -> dict:
+    """
+    AGENT ACTION FUNCTION
+    ---------------------
+    After deciding the category, takes the appropriate action.
+
+    Actions:
+    - BLOCK  : harmful content — don't pass to LLM
+    - REDACT : PII found — clean it, allow to continue
+    - PASS   : clean text — send as-is
+    """
+
+    # ACTION: BLOCK
+    if category in ("self_harm", "hate_speech", "abuse", "profanity"):
+        if mode == "input":
+            return {
+                "allowed": False,
+                "category": category,
+                "redacted_text": text,
+                "agent_action": "BLOCKED",
+                "reason": f"Detected {category} in user input"
+            }
+        else:
+            return {
+                "allowed": False,
+                "category": category,
+                "safe_text": SAFE_RESPONSES.get(category, "⚠️ Response blocked."),
+                "agent_action": "BLOCKED",
+                "reason": f"Detected {category} in LLM output"
+            }
+
+    # ACTION: REDACT PII
+    if category == "pii":
+        cleaned = redact_pii(text)
+        if mode == "input":
+            return {
+                "allowed": True,
+                "category": "pii",
+                "redacted_text": cleaned,
+                "agent_action": "REDACTED",
+                "reason": "PII detected and removed before sending to LLM"
+            }
+        else:
+            return {
+                "allowed": True,
+                "category": "pii",
+                "safe_text": cleaned,
+                "agent_action": "REDACTED",
+                "reason": "PII detected and removed from LLM response"
+            }
+
+    # ACTION: PASS clean content
+    if mode == "input":
+        return {
+            "allowed": True,
+            "category": "clean",
+            "redacted_text": text,
+            "agent_action": "PASSED",
+            "reason": "No issues detected"
+        }
+    else:
+        return {
+            "allowed": True,
+            "category": "clean",
+            "safe_text": text,
+            "agent_action": "PASSED",
+            "reason": "No issues detected"
+        }
+
+
+# ============================================================
+#  SECTION 5 — PUBLIC FUNCTIONS
+#  These are what Member 1 imports into main.py
+# ============================================================
+
+def moderate_input(text: str) -> dict:
+    """
+    GUARDRAIL INPUT (Step 2 in architecture)
+    Call this BEFORE sending user message to LLM.
+
+    Returns:
+        {
+            "allowed"      : bool   → True=send to LLM, False=block
+            "category"     : str    → what was detected
+            "redacted_text": str    → safe version to send to LLM
+            "agent_action" : str    → PASSED / REDACTED / BLOCKED
+            "reason"       : str    → why agent took this action
+        }
+    """
+    category = _agent_decide(text)
+    return _agent_act(text, category, mode="input")
+
+
+def moderate_output(text: str) -> dict:
+    """
+    GUARDRAIL OUTPUT (Step 7 in architecture)
+    Call this AFTER LLM responds, BEFORE showing to user.
+
+    Returns:
+        {
+            "allowed"     : bool → True=show to user, False=replace
+            "category"    : str  → what was detected
+            "safe_text"   : str  → safe version to show user
+            "agent_action": str  → PASSED / REDACTED / BLOCKED
+            "reason"      : str  → why agent took this action
+        }
+    """
+    category = _agent_decide(text)
+    return _agent_act(text, category, mode="output")
+
+
+def redact_pii(text: str) -> str:
+    """
+    Scans text and replaces all PII with safe placeholders.
+    Can be called independently anywhere in the system.
+
+    Example:
+        >>> redact_pii("Call me at 9876543210, email: raj@gmail.com")
+        "Call me at [PHONE REDACTED], email: [EMAIL REDACTED]"
+    """
+    result = text
+    for pii_type, (pattern, placeholder) in PII_PATTERNS.items():
+        result = re.sub(pattern, placeholder, result, flags=re.IGNORECASE)
+    return result
+
+
+def get_safe_response(category: str) -> str:
+    """
+    Gets the pre-written safe message for a blocked category.
+    Member 1 calls this to know what to send back to user.
+    """
+    return SAFE_RESPONSES.get(
+        category,
+        "⚠️ Your message could not be processed. Please rephrase and try again."
+    )
+
+
+# ============================================================
+#  SECTION 6 — QUICK DEMO
+#  Run: python guardrails.py
+# ============================================================
+
+if __name__ == "__main__":
+
+    test_cases = [
+        ("I want a home loan of 40 lakhs",               "SHOULD: Pass clean"),
+        ("My Aadhaar is 2345 6789 0123",                 "SHOULD: Redact PII"),
+        ("My PAN is ABCDE1234F and phone 9876543210",    "SHOULD: Redact PII"),
+        ("This fucking bank is useless",                  "SHOULD: Block profanity"),
+        ("I want to kill myself, I can't pay this loan", "SHOULD: Block self harm"),
+        ("All Muslims are terrorists",                    "SHOULD: Block hate speech"),
+        ("You are completely worthless and stupid",       "SHOULD: Block abuse"),
+    ]
+
+    print("=" * 65)
+    print("  GUARDRAILS AGENT — LIVE DEMO")
+    print("=" * 65)
+
+    for text, expected in test_cases:
+        result = moderate_input(text)
+        print(f"\n📩 INPUT    : {text}")
+        print(f"🎯 EXPECTED : {expected}")
+        print(f"🤖 ACTION   : {result['agent_action']}")
+        print(f"📂 CATEGORY : {result['category']}")
+        print(f"✅ ALLOWED  : {result['allowed']}")
+        if result['agent_action'] == "REDACTED":
+            print(f"🔒 CLEANED  : {result['redacted_text']}")
+        if not result['allowed']:
+            print(f"💬 RESPONSE : {get_safe_response(result['category'])[:80]}...")
+        print("-" * 65)
