@@ -1,9 +1,17 @@
+import os
 import json
+import logging
 from langchain_community.chat_models import ChatOllama
 from langchain_core.prompts import PromptTemplate
 
+# Configure logging for better debugging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # We use JSON format so the AI always replies with computer-readable data
-llm = ChatOllama(model="mistral", temperature=0.0, format="json")
+# Model configurable via environment variable
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "mistral")
+llm = ChatOllama(model=OLLAMA_MODEL, temperature=0.0, format="json")
 
 
 def classify_intent(user_message: str) -> str:

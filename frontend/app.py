@@ -1,4 +1,5 @@
 # frontend/app.py
+import os
 import streamlit as st
 import requests
 import uuid
@@ -11,7 +12,8 @@ from ui_components import (
     render_agent_trace
 )
 
-API_URL = "http://localhost:8000"
+# Use environment variable for API URL, with localhost as fallback for local dev
+API_URL = os.environ.get("LOAN_API_URL", "http://localhost:8000")
 
 # --- Page Config ---
 st.set_page_config(page_title="Loan Assistant", page_icon="🏦", layout="wide")

@@ -1,10 +1,9 @@
 # backend/main.py
-from fastapi import FastAPI, HTTPException
+import time
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from backend.schemas import ChatRequest, ChatResponse, RagQueryRequest, RagQueryResponse
 from backend.orchestrator import handle_chat
 from backend.adapters import rag_adapter
-import time
-from fastapi import FastAPI, HTTPException, UploadFile, File
 
 app = FastAPI(title="Loan Approval & Credit Risk Assistant API")
 

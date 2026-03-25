@@ -6,7 +6,7 @@ from rag.retriever import retrieve as actual_retrieve
 from perf.cache import retriever_cache, hash_key
 from rag.retriever import ingest_new_text
 
-def retrieve(query: str, k: int = 4) -> list:
+def retrieve(query: str, k: int = 5) -> list:
     """Calls ChromaDB but checks the cache first for speed!"""
     try:
         # 1. Check Cache
