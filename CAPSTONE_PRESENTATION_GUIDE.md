@@ -514,6 +514,492 @@ The difference is ChromaDB **wraps** these algorithms in a nice package with:
 
 ---
 
+---
+---
+
+# SECTION 3: COMPLETE PROJECT WORKFLOW (End-to-End)
+
+This section provides the **total workflow** of the Loan Assistant project - from system architecture to code flow.
+
+---
+
+## System Architecture Overview
+
+```
++-----------------------------------------------------------------------------------+
+|                              LOAN ASSISTANT SYSTEM                                |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
+|   +-------------+     +------------------+     +-----------------------------+    |
+|   |   FRONTEND  | --> |    BACKEND API   | --> |      AGENTIC PIPELINE       |    |
+|   | (Streamlit) |     |    (FastAPI)     |     |   (Orchestrator + Agents)   |    |
+|   +-------------+     +------------------+     +-----------------------------+    |
+|                                                          |                        |
+|                              +----------------------------+-------------------+   |
+|                              |                            |                   |   |
+|                              v                            v                   v   |
+|                     +--------------+            +----------------+    +-------+   |
+|                     |  GUARDRAILS  |            |  VECTOR DB     |    | TOOLS |   |
+|                     | (Security)   |            |  (ChromaDB)    |    | (Math)|   |
+|                     +--------------+            +----------------+    +-------+   |
+|                                                          |                        |
+|                                                          v                        |
+|                                                 +----------------+                 |
+|                                                 | POLICY DOCS    |                 |
+|                                                 | (PDFs/Text)    |                 |
+|                                                 +----------------+                 |
+|                                                                                   |
++-----------------------------------------------------------------------------------+
+```
+
+---
+
+## File Structure and Purpose
+
+```
+loan-assistant/
+|
++-- frontend/
+|   +-- app.py                    # Streamlit UI (chat interface)
+|
++-- backend/
+|   +-- main.py                   # FastAPI server entry point
+|   +-- orchestrator.py           # BRAIN - Routes messages to correct agents
+|   +-- schemas.py                # Data models (request/response structure)
+|   +-- memory_store.py           # Session memory (stores conversation state)
+|   |
+|   +-- agents/
+|   |   +-- intake_agent.py       # Extracts data from user messages
+|   |   +-- retrieval_agent.py    # Searches ChromaDB for policy chunks
+|   |   +-- tool_agent.py         # Runs financial calculations (EMI, eligibility)
+|   |   +-- decision_agent.py     # Makes final decision / generates response
+|   |
+|   +-- adapters/
+|       +-- guardrails_adapter.py # Connects orchestrator to guardrails
+|
++-- guardrails/
+|   +-- guardrails.py             # All security checks (input/output)
+|
++-- rag/
+|   +-- ingest.py                 # One-time: Load PDFs into ChromaDB
+|   +-- chroma_db/                # Vector database storage
+|
++-- data/
+    +-- policies/                 # Bank policy PDFs
+```
+
+---
+
+## Complete Data Flow (Step by Step)
+
+### PHASE 1: Document Ingestion (One-Time Setup)
+
+This happens ONCE when you set up the system:
+
+```
++------------------+     +------------------+     +------------------+     +------------------+
+|  POLICY PDFs     | --> |  TEXT EXTRACTION | --> |  CHUNKING        | --> |  EMBEDDING       |
+|  (data/policies) |     |  (PyPDF/etc)     |     |  (Split text)    |     |  (Convert to     |
+|                  |     |                  |     |  ~500 words each |     |   vectors)       |
++------------------+     +------------------+     +------------------+     +------------------+
+                                                                                    |
+                                                                                    v
+                                                                          +------------------+
+                                                                          |  CHROMADB        |
+                                                                          |  (Store vectors  |
+                                                                          |   + metadata)    |
+                                                                          +------------------+
+```
+
+**Code File:** `rag/ingest.py`
+
+**What Happens:**
+1. Read all PDF files from `data/policies/` folder
+2. Extract text from each PDF
+3. Split text into chunks (paragraphs of ~500 words)
+4. Convert each chunk into a vector embedding (list of numbers)
+5. Store vectors + original text + metadata in ChromaDB
+
+---
+
+### PHASE 2: User Query Processing (Runtime)
+
+This happens EVERY TIME a user sends a message:
+
+```
++------------------------------------------------------------------+
+|                    STEP 1: USER INPUT                            |
+|  User types: "What is the interest rate for home loans?"         |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    STEP 2: API ENDPOINT                          |
+|  File: backend/main.py                                           |
+|  - Receives HTTP POST request                                    |
+|  - Extracts message and session_id                               |
+|  - Calls orchestrator.handle_chat()                              |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    STEP 3: ORCHESTRATOR                          |
+|  File: backend/orchestrator.py                                   |
+|  - The "traffic controller" of the system                        |
+|  - Coordinates all agents                                        |
+|  - Decides which route to take                                   |
++------------------------------------------------------------------+
+                              |
+          +-------------------+-------------------+
+          |                                       |
+          v                                       v
++------------------+                    +------------------+
+| STEP 3A:         |                    | STEP 3B:         |
+| INPUT GUARDRAILS |                    | LOAD MEMORY      |
+| (Security Check) |                    | (Session State)  |
++------------------+                    +------------------+
+          |                                       |
+          +-------------------+-------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    STEP 4: INTAKE AGENT                          |
+|  File: backend/agents/intake_agent.py                            |
+|  - Extracts numbers (loan amount, income, etc.)                  |
+|  - Classifies intent (policy question, calculation, loan app)    |
+|  - Determines routing path                                       |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    STEP 5: ROUTING DECISION                      |
+|  Based on intent, choose one of these paths:                     |
++------------------------------------------------------------------+
+          |              |              |              |
+          v              v              v              v
+    +---------+    +---------+    +---------+    +---------+
+    | RAG     |    | TOOLS   |    | LOAN    |    | GENERAL |
+    | Route   |    | Route   |    | Flow    |    | Route   |
+    +---------+    +---------+    +---------+    +---------+
+```
+
+---
+
+### PHASE 3: The Different Routes in Detail
+
+#### ROUTE A: RAG (Policy Questions)
+
+```
+User: "What documents do I need for a home loan?"
+
++------------------------------------------------------------------+
+|                    RETRIEVAL AGENT                               |
+|  File: backend/agents/retrieval_agent.py                         |
++------------------------------------------------------------------+
+|                                                                  |
+|  1. Take user question                                           |
+|  2. Convert question to vector embedding                         |
+|  3. Search ChromaDB for similar vectors                          |
+|  4. Return top 3-4 most relevant chunks                          |
+|                                                                  |
+|  Example chunks returned:                                        |
+|  - "Required documents for home loan: PAN card, Aadhaar..."      |
+|  - "Salary slips for last 3 months are mandatory..."             |
+|  - "Property documents must be submitted for verification..."    |
+|                                                                  |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    DECISION AGENT                                |
+|  File: backend/agents/decision_agent.py                          |
++------------------------------------------------------------------+
+|                                                                  |
+|  1. Receive: User question + Retrieved chunks                    |
+|  2. Create prompt: "Answer ONLY from these chunks: ..."          |
+|  3. Send to LLM (Mistral/Ollama)                                 |
+|  4. LLM generates response using ONLY the chunk information      |
+|  5. Return formatted answer                                      |
+|                                                                  |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    OUTPUT GUARDRAILS                             |
+|  - Check for PII leakage                                         |
+|  - Verify response is appropriate                                |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    RESPONSE TO USER                              |
+|  "For a home loan, you need the following documents:             |
+|   1. PAN Card                                                    |
+|   2. Aadhaar Card                                                |
+|   3. Salary slips for last 3 months..."                          |
++------------------------------------------------------------------+
+```
+
+#### ROUTE B: Tools (Calculations)
+
+```
+User: "Calculate EMI for 10 lakh loan at 10% for 5 years"
+
++------------------------------------------------------------------+
+|                    INTAKE AGENT                                  |
+|  Extracts: loan_amount=1000000, interest_rate=10, tenure=60      |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    TOOL AGENT                                    |
+|  File: backend/agents/tool_agent.py                              |
++------------------------------------------------------------------+
+|                                                                  |
+|  1. EMI Calculator:                                              |
+|     EMI = P * r * (1+r)^n / ((1+r)^n - 1)                        |
+|     EMI = 21,247 per month                                       |
+|                                                                  |
+|  2. Return: {emi: 21247, principal: 1000000, tenure: 60}         |
+|                                                                  |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    DECISION AGENT                                |
+|  Formats the calculation into a nice response                    |
+|  (No LLM needed for math - prevents hallucination)               |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|                    RESPONSE TO USER                              |
+|  "Your EMI: Rs. 21,247/month                                     |
+|   Total Payment: Rs. 12,74,820                                   |
+|   Total Interest: Rs. 2,74,820"                                  |
++------------------------------------------------------------------+
+```
+
+#### ROUTE C: Loan Application Flow
+
+```
+User: "I want to apply for a loan of 5 lakh, I earn 40000/month"
+
++------------------------------------------------------------------+
+|                    INTAKE AGENT                                  |
+|  Extracts: loan_amount=500000, income=40000                      |
+|  Missing: age, credit_score, tenure                              |
++------------------------------------------------------------------+
+                              |
+          +-------------------+-------------------+
+          |                                       |
+          v                                       v
+  (If data missing)                      (If all data present)
+          |                                       |
+          v                                       v
++------------------+                    +------------------+
+| Ask for missing  |                    | RETRIEVAL AGENT  |
+| information      |                    | (Get policies)   |
++------------------+                    +------------------+
+                                                  |
+                                                  v
+                                        +------------------+
+                                        | TOOL AGENT       |
+                                        | - EMI calc       |
+                                        | - Eligibility    |
+                                        | - Risk score     |
+                                        +------------------+
+                                                  |
+                                                  v
+                                        +------------------+
+                                        | DECISION AGENT   |
+                                        | - Approve/Reject |
+                                        | - Give reasons   |
+                                        +------------------+
+```
+
+---
+
+### PHASE 4: Guardrails in Detail
+
+```
++------------------------------------------------------------------+
+|                    INPUT GUARDRAILS FLOW                         |
+|  File: guardrails/guardrails.py                                  |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|  CHECK 1: KEYWORD FILTERS                                        |
+|  - Look for known bad patterns                                   |
+|  - "ignore instructions", "pretend you are", etc.                |
+|  - Fast, catches obvious attacks                                 |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|  CHECK 2: TOXIC CONTENT                                          |
+|  - Hate speech, threats, inappropriate content                   |
+|  - Keyword matching + pattern detection                          |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|  CHECK 3: PII DETECTION                                          |
+|  - Regex patterns for Aadhaar, PAN, phone, email                 |
+|  - Optionally redact sensitive info                              |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|  CHECK 4: LLM INTENT ANALYSIS                                    |
+|  - Send message to LLM for deep analysis                         |
+|  - Returns: is_financial, is_off_topic, is_security_threat       |
+|  - Catches sophisticated attacks                                 |
++------------------------------------------------------------------+
+                              |
+                              v
++------------------------------------------------------------------+
+|  FINAL VERDICT                                                   |
+|  - ALLOW: Message is safe, proceed                               |
+|  - BLOCK: Message is harmful, return safe response               |
+|  - REDACT: Message has PII, clean and proceed                    |
++------------------------------------------------------------------+
+```
+
+---
+
+## Complete Message Lifecycle (All Steps)
+
+```
+USER: "What is the processing fee for home loans?"
+
+1. [FRONTEND] User types message in Streamlit chat
+        |
+        v
+2. [API] POST /chat with {session_id, message}
+        |
+        v
+3. [ORCHESTRATOR] orchestrator.handle_chat() called
+        |
+        v
+4. [GUARDRAILS - INPUT]
+   - Keyword check: PASS
+   - Toxic check: PASS  
+   - PII check: No PII found
+   - LLM Intent: {is_financial: true, is_policy_query: true, is_off_topic: false}
+   - Verdict: ALLOW
+        |
+        v
+5. [MEMORY] Load session state (previous conversation)
+        |
+        v
+6. [INTAKE AGENT] 
+   - No numbers to extract
+   - Intent: policy_question
+   - Route: rag
+        |
+        v
+7. [RETRIEVAL AGENT]
+   - Query: "What is the processing fee for home loans?"
+   - Search ChromaDB
+   - Found 3 chunks about fees
+        |
+        v
+8. [DECISION AGENT]
+   - Prompt: "Answer from these chunks: [chunk1, chunk2, chunk3]"
+   - LLM generates: "The processing fee for home loans is 0.5% of the loan amount..."
+        |
+        v
+9. [GUARDRAILS - OUTPUT]
+   - PII check: PASS
+   - Content check: PASS
+   - Verdict: ALLOW
+        |
+        v
+10. [MEMORY] Save conversation turn
+        |
+        v
+11. [API] Return response JSON with:
+    - reply: "The processing fee..."
+    - decision: {status: "INFO_PROVIDED"}
+    - rag: {used: true, chunks: [...]}
+    - guardrails: {input: "ALLOW", output: "ALLOW"}
+    - agent_trace: [step-by-step log]
+    - latency_ms: {retrieval: 45, llm: 1200, total: 1350}
+        |
+        v
+12. [FRONTEND] Display response in chat
+
+USER SEES: "The processing fee for home loans is 0.5% of the loan amount, 
+            subject to a minimum of Rs. 5,000..."
+```
+
+---
+
+## The Agent Trace (Glass Brain)
+
+Your system logs every step for transparency:
+
+```json
+{
+  "agent_trace": [
+    {"step": 1, "agent": "Guardrails", "action": "Scanned Input", "data": {"verdict": "ALLOW"}},
+    {"step": 2, "agent": "Intake Agent", "action": "Classified Intent: policy_question", "data": {...}},
+    {"step": 3, "agent": "Retrieval Agent", "action": "RAG Search - Found 3 chunks", "data": ["policy1.pdf", "fees.pdf"]},
+    {"step": 4, "agent": "Decision Agent", "action": "Generated RAG Response", "data": {"status": "INFO_PROVIDED"}}
+  ]
+}
+```
+
+This is displayed in the UI as the "Glass Brain" - showing exactly how the AI arrived at its answer.
+
+---
+
+## Key Technologies Used
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| Frontend | Streamlit | Chat interface |
+| Backend API | FastAPI | REST endpoints |
+| LLM | Ollama + Mistral | Text generation |
+| Vector DB | ChromaDB | Store policy embeddings |
+| Embeddings | Sentence Transformers | Convert text to vectors |
+| Memory | In-memory dict | Session state |
+| Security | Custom + LLM | Guardrails |
+
+---
+
+## Summary: Why This Architecture Works
+
+```
++------------------------------------------------------------------+
+|                    ACCURACY                                      |
+|  RAG ensures answers come from YOUR documents, not AI guesses    |
++------------------------------------------------------------------+
+                              +
++------------------------------------------------------------------+
+|                    SECURITY                                      |
+|  Multi-layer guardrails block attacks and off-topic queries      |
++------------------------------------------------------------------+
+                              +
++------------------------------------------------------------------+
+|                    EFFICIENCY                                    |
+|  Smart routing: math uses code, only complex questions use LLM   |
++------------------------------------------------------------------+
+                              +
++------------------------------------------------------------------+
+|                    TRANSPARENCY                                  |
+|  Agent trace shows every decision for debugging and compliance   |
++------------------------------------------------------------------+
+                              =
++------------------------------------------------------------------+
+|                    PRODUCTION-READY LOAN ASSISTANT               |
++------------------------------------------------------------------+
+```
+
+---
+
 # END OF PRESENTATION GUIDE
 
 Good luck with your presentation!
