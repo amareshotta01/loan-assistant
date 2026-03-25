@@ -29,7 +29,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.post("/chat", response_model=ChatResponse)
 @limiter.limit("10/minute")
-async def chat_endpoint(request: ChatRequest, req: Request):
+async def chat_endpoint(req: Request, request: ChatRequest):
     try:
         logger.info(f"Chat request received for session: {request.session_id}")
         # Pass the request to your autonomous orchestrator
