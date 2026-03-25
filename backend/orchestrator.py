@@ -9,49 +9,93 @@ from backend.agents import intake_agent, retrieval_agent, tool_agent, decision_a
 
 async def handle_chat(session_id: str, message: str, metadata: dict = None) -> ChatResponse:
     t0 = time.time()
-    agent_trace = [] # <--- THIS IS OUR NEW TRACKER
+    agent_trace = []  # Track which agents were involved
     
-    # 1. SECURITY: Input Guardrails
+    # 1. SECURITY: Input Guardrails - ALWAYS runs first
     verdict_in = guardrails_adapter.moderate_input(message)
     if verdict_in["action"] == "BLOCK":
-        return _build_safe_response(session_id, "I cannot process that request due to content policy.", verdict_in, t0)
+        # Return the safe response from guardrails instead of generic message
+        safe_response = guardrails_adapter.get_safe_response(verdict_in.get("categories", ["unknown"])[0] if verdict_in.get("categories") else "unknown")
+        return _build_safe_response(session_id, safe_response, verdict_in, t0)
     safe_message = verdict_in.get("redacted_text", message)
-    agent_trace.append({"step": 1, "agent": "🛡️ Guardrails", "action": "Scanned Input", "data": verdict_in})
+    agent_trace.append({"step": 1, "agent": "Guardrails", "action": "Scanned Input", "data": verdict_in})
 
     # 2. MEMORY: Load state
     state = memory_store.load(session_id)
 
-    # AGENT 1: INTAKE AGENT
+    # AGENT 1: INTAKE AGENT (with Intent Classification)
     extracted_data = intake_agent.process(safe_message, state["entities"])
-    agent_trace.append({"step": 2, "agent": "📥 Intake Agent", "action": "Extracted JSON Entities", "data": extracted_data})
+    intent = extracted_data.get("intent", "general")
+    route_to = extracted_data.get("route_to", "loan_flow")
+    agent_trace.append({
+        "step": 2, 
+        "agent": "Intake Agent", 
+        "action": f"Classified Intent: {intent}", 
+        "data": {"intent": intent, "route_to": route_to, "extracted": extracted_data}
+    })
     
-    # Update memory
+    # Update memory with any extracted data
     if extracted_data.get("loan_amount"): state["entities"]["loan_amount"] = extracted_data["loan_amount"]
     if extracted_data.get("income_monthly"): state["entities"]["income_monthly"] = extracted_data["income_monthly"]
     if extracted_data.get("tenure_months"): state["entities"]["tenure_months"] = extracted_data["tenure_months"]
     if extracted_data.get("age"): state["entities"]["age"] = extracted_data["age"]
     if extracted_data.get("credit_score"): state["entities"]["credit_score"] = extracted_data["credit_score"]
     
+    # ============================================================
+    # INTENT-BASED ROUTING
+    # ============================================================
+    
+    # ROUTE 1: POLICY QUESTIONS -> Go directly to RAG
+    if route_to == "rag" or intent == "policy_question":
+        rag_data = retrieval_agent.process(safe_message)
+        rag_model = RagMetadataModel(used=rag_data["used_rag"], top_k=len(rag_data["chunks"]), chunks=rag_data["chunks"])
+        agent_trace.append({"step": 3, "agent": "Retrieval Agent", "action": f"RAG Search - Found {rag_model.top_k} chunks", "data": [c['source'] for c in rag_data.get('chunks', [])]})
+        
+        # Use decision agent to formulate response based on RAG data
+        chat_history = state.get("summary", "No history yet.")
+        reply, decision_dict = decision_agent.process(safe_message, {}, rag_data, chat_history)
+        decision_model = DecisionModel(**decision_dict)
+        agent_trace.append({"step": 4, "agent": "Decision Agent", "action": "Generated RAG Response", "data": decision_dict})
+        
+        # Output guardrails
+        verdict_out = guardrails_adapter.moderate_output(reply)
+        if verdict_out["action"] != "ALLOW":
+            reply = verdict_out.get("safe_text", "Output redacted for safety.")
+        
+        memory_store.save(session_id, state, safe_message, reply)
+        return _build_response(session_id, reply, decision_model, ToolResultsModel(), rag_model, verdict_in, state, t0, verdict_out, agent_trace)
+    
+    # ROUTE 2: GENERAL QUERIES -> Simple response
+    if route_to == "general" or intent == "general":
+        reply = "Hello! I'm your Loan Assistant. I can help you with:\n- Applying for a loan\n- Answering questions about our loan policies, interest rates, and eligibility\n- Calculating your EMI\n- Checking your eligibility\n\nHow can I assist you today?"
+        decision_model = DecisionModel(status="GREETING")
+        agent_trace.append({"step": 3, "agent": "General Response", "action": "Greeting/Help", "data": {}})
+        
+        memory_store.save(session_id, state, safe_message, reply)
+        return _build_response(session_id, reply, decision_model, ToolResultsModel(), RagMetadataModel(), verdict_in, state, t0, None, agent_trace)
+    
+    # ROUTE 3: LOAN APPLICATION -> Collect data, then process
     if extracted_data.get("missing_fields"):
-        reply = f"To process your request, I still need your: {', '.join(extracted_data['missing_fields'])}."
+        reply = f"To process your loan application, I still need the following information: {', '.join(extracted_data['missing_fields'])}."
         decision = DecisionModel(status="NEED_MORE_INFO")
         return _build_response(session_id, reply, decision, ToolResultsModel(), RagMetadataModel(), verdict_in, state, t0, agent_trace=agent_trace)
 
-    # AGENT 2: RETRIEVAL AGENT
+    # ROUTE 4: CALCULATIONS / FULL LOAN PROCESSING
+    # AGENT 2: RETRIEVAL AGENT (for additional context)
     rag_data = retrieval_agent.process(safe_message)
     rag_model = RagMetadataModel(used=rag_data["used_rag"], top_k=len(rag_data["chunks"]), chunks=rag_data["chunks"])
-    agent_trace.append({"step": 3, "agent": "📚 Retrieval Agent", "action": f"Searched Vector DB. Found {rag_model.top_k} chunks.", "data": [c['source'] for c in rag_data.get('chunks', [])]})
+    agent_trace.append({"step": 3, "agent": "Retrieval Agent", "action": f"Searched Vector DB. Found {rag_model.top_k} chunks.", "data": [c['source'] for c in rag_data.get('chunks', [])]})
 
     # AGENT 3: TOOL AGENT
     tool_results_dict = tool_agent.process(state["entities"])
     tool_model = ToolResultsModel(**tool_results_dict)
-    agent_trace.append({"step": 4, "agent": "🧮 Tool Agent", "action": "Ran Financial Mathematics", "data": tool_results_dict})
+    agent_trace.append({"step": 4, "agent": "Tool Agent", "action": "Ran Financial Mathematics", "data": tool_results_dict})
 
     # AGENT 4: DECISION AGENT
     chat_history = state.get("summary", "No history yet.")
     reply, decision_dict = decision_agent.process(safe_message, tool_results_dict, rag_data, chat_history)
     decision_model = DecisionModel(**decision_dict)
-    agent_trace.append({"step": 5, "agent": "⚖️ Decision Agent", "action": "Made Final Credit Verdict", "data": decision_dict})
+    agent_trace.append({"step": 5, "agent": "Decision Agent", "action": "Made Final Credit Verdict", "data": decision_dict})
 
     # 3. SECURITY: Output Guardrails
     verdict_out = guardrails_adapter.moderate_output(reply)

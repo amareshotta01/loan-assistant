@@ -5,6 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from guardrails.guardrails import moderate_input as gi_moderate_input
 from guardrails.guardrails import moderate_output as gi_moderate_output
+from guardrails.guardrails import get_safe_response as gi_get_safe_response
 
 def moderate_input(text: str) -> dict:
     """Connects the Orchestrator to your real Guardrails Agent"""
@@ -32,3 +33,10 @@ def moderate_output(text: str) -> dict:
         "categories": category_list,
         "safe_text": result.get("safe_text", text)
     }
+
+def get_safe_response(category: str) -> str:
+    """
+    Gets the appropriate safe response message for a blocked category.
+    This is shown to the user when their input is blocked.
+    """
+    return gi_get_safe_response(category)
