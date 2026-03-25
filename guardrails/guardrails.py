@@ -51,6 +51,23 @@ PII_PATTERNS = {
 
 HARMFUL_PATTERNS = {
 
+    "security_threat": [
+        # Hacking/exploitation threats
+        r"\b(?:hack|hacking|exploit|breach|crack|bypass|break\s*into)\b.*\b(?:this|your|the)\b",
+        r"\b(?:i\s*(?:can|will|gonna|going\s*to)|let\s*me)\s*(?:hack|exploit|breach|crack|bypass)\b",
+        r"\b(?:sql\s*injection|xss|csrf|ddos|brute\s*force)\b",
+        r"\b(?:vulnerability|vulnerabilities|zero[\s\-]?day)\b",
+        # System manipulation
+        r"\b(?:inject|injection|payload|malware|trojan|virus|worm)\b",
+        r"\b(?:backdoor|rootkit|keylogger|phishing)\b",
+        # Challenge/threat to security
+        r"\b(?:stop\s*me|catch\s*me|try\s*(?:to\s*)?stop)\b.*\b(?:if\s*you\s*can|i\s*dare)\b",
+        r"\b(?:i\s*(?:can|will)\s*(?:break|destroy|crash|take\s*down))\b",
+        # Unauthorized access
+        r"\b(?:steal|stealing|stolen)\s*(?:data|info|information|credentials|password)\b",
+        r"\b(?:access|get\s*into)\s*(?:your|the)\s*(?:system|database|server|account)\b",
+    ],
+
     "profanity": [
         # Common English profanity - with flexible word boundaries
         r"(?:^|[\s\.,!?;:\-_\(\)\[\]])(?:f+u+c+k+|sh+i+t+|bastard|b+i+t+c+h+|a+s+s+h+o+l+e+|d+a+m+n+|crap|d+i+c+k+|cock|wh+o+r+e+|sl+u+t+)(?:$|[\s\.,!?;:\-_\(\)\[\]])",
