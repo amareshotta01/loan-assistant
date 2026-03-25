@@ -72,6 +72,7 @@ class ChatResponse(BaseModel):
     guardrails: GuardrailsModel
     agent_trace: List[Dict[str, Any]] = []
     latency_ms: LatencyModel
+    cache_hit: bool = False  # True if response was served from cache
 
 class RagQueryResponse(BaseModel):
     chunks: List[RagChunkModel]
