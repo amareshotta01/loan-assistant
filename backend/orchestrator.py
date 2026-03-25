@@ -54,6 +54,33 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
             verdict_in, {"entities": {}}, t0, None, agent_trace
         )
 
+
+        # OFF-TOPIC CHECK: Block questions unrelated to loans/banking
+    is_off_topic = intent_hints.get("is_off_topic", False)
+    off_topic_reason = intent_hints.get("off_topic_reason")
+    
+    if is_off_topic:
+        off_topic_response = (
+            "I'm a Loan Assistant and can only help with loan-related queries such as:\n"
+            "- Loan applications and eligibility\n"
+            "- EMI calculations\n"
+            "- Interest rates and fees\n"
+            "- Policy and documentation questions\n\n"
+            "Your question appears to be about something else. "
+            "Please ask me about loans or banking services!"
+        )
+        agent_trace.append({
+            "step": 2, 
+            "agent": "Intent Validator", 
+            "action": "Blocked Off-Topic Query", 
+            "data": {"reason": off_topic_reason, "intent_hints": intent_hints}
+        })
+        return _build_response(
+            session_id, off_topic_response, 
+            DecisionModel(status="OFF_TOPIC"), ToolResultsModel(), RagMetadataModel(), 
+            verdict_in, {"entities": {}}, t0, None, agent_trace
+        )
+    
     # 2. MEMORY: Load state
     state = memory_store.load(session_id)
 
