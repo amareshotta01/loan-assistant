@@ -16,213 +16,165 @@ llm = ChatOllama(model=OLLAMA_MODEL, temperature=OLLAMA_TEMPERATURE, format="jso
 
 
 # ============================================================
-#  SECTION 1 — REGEX-BASED VALUE EXTRACTION (Pre-LLM)
-#  Reliably extracts and converts values before LLM processing
+#  SECTION 1 — LLM-BASED INTELLIGENT ENTITY EXTRACTION
+#  Uses AI to understand natural language and extract values
 # ============================================================
 
-def _parse_indian_number(text: str) -> float:
+def _extract_entities_with_llm(message: str) -> dict:
     """
-    Parses Indian number formats to actual numeric values.
+    LLM-BASED ENTITY EXTRACTION
+    ---------------------------
+    Uses the LLM to intelligently extract loan-related entities from
+    natural language. This is dynamic and can understand various
+    phrasings like:
+    - "5-year time period" -> tenure_months: 60
+    - "repay over 5 years" -> tenure_months: 60
+    - "I earn 80000 per month" -> income_monthly: 80000
+    - "20 lakhs loan" -> loan_amount: 2000000
     
-    Examples:
-        "10 lakh" -> 1000000
-        "10L" -> 1000000
-        "1.5 crore" -> 15000000
-        "50k" -> 50000
-        "25,00,000" -> 2500000
-        "500000" -> 500000
+    The LLM understands context and semantics, not just patterns.
     """
-    if not text:
-        return None
     
-    text = text.lower().strip()
-    text = text.replace(',', '').replace(' ', '')
-    
-    # Handle crore variations
-    crore_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:cr|crore|crores)', text)
-    if crore_match:
-        return float(crore_match.group(1)) * 10000000
-    
-    # Handle lakh variations
-    lakh_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:l|lakh|lakhs|lac|lacs)', text)
-    if lakh_match:
-        return float(lakh_match.group(1)) * 100000
-    
-    # Handle thousand variations
-    thousand_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:k|thousand|thousands)', text)
-    if thousand_match:
-        return float(thousand_match.group(1)) * 1000
-    
-    # Handle plain numbers
-    plain_match = re.search(r'(\d+(?:\.\d+)?)', text)
-    if plain_match:
-        return float(plain_match.group(1))
-    
-    return None
+    extraction_prompt = """You are an intelligent entity extraction agent for a loan application system.
+Your task is to analyze the user's message and extract all loan-related information.
+
+USER MESSAGE: {message}
+
+EXTRACTION RULES:
+1. **loan_amount**: The amount of money the user wants to borrow
+   - Convert Indian formats: "20 lakhs" = 2000000, "1 crore" = 10000000, "50k" = 50000
+   - Look for phrases like: "loan of X", "borrow X", "need X", "want X loan"
+
+2. **income_monthly**: The user's monthly income/salary
+   - If annual income is given, divide by 12
+   - Look for: "earn X per month", "salary X", "monthly income X", "I earn X"
+   - Convert: "80000 per month" = 80000, "6 lakh per annum" = 50000
+
+3. **tenure_months**: How long they want to repay (ALWAYS in months)
+   - Convert years to months: "5 years" = 60, "5-year" = 60, "5 year period" = 60
+   - Look for: "X years", "X-year", "over X years", "repay in X years", "X year time period", "tenure X", "for X years"
+   - If months given directly, use as-is: "36 months" = 36
+
+4. **age**: The user's age in years (must be 18-100)
+   - Look for: "I am X years old", "age X", "aged X", "X years old"
+
+5. **credit_score**: CIBIL/credit score (must be 300-900)
+   - Look for: "credit score X", "CIBIL X", "score is X"
+
+6. **interest_rate**: Interest rate percentage (must be 1-30)
+   - Look for: "X% interest", "rate of X%", "at X%"
+
+IMPORTANT:
+- Return ONLY the values you can confidently extract from the message
+- Use null for any field you cannot determine
+- For tenure, ALWAYS convert to months (years * 12)
+- For loan_amount and income, convert lakhs/crores to actual numbers
+
+Respond ONLY in this JSON format (no explanation):
+{{
+    "loan_amount": <number or null>,
+    "income_monthly": <number or null>,
+    "tenure_months": <number or null>,
+    "age": <number or null>,
+    "credit_score": <number or null>,
+    "interest_rate": <number or null>
+}}"""
+
+    try:
+        chain = PromptTemplate.from_template(extraction_prompt) | llm
+        response = chain.invoke({"message": message})
+        
+        # Parse the JSON response
+        cleaned_content = response.content.strip()
+        if cleaned_content.startswith("```json"):
+            cleaned_content = cleaned_content[7:]
+        if cleaned_content.startswith("```"):
+            cleaned_content = cleaned_content[3:]
+        if cleaned_content.endswith("```"):
+            cleaned_content = cleaned_content[:-3]
+        
+        result = json.loads(cleaned_content.strip())
+        logger.info(f"LLM extraction result: {result}")
+        
+        # Validate and clean the extracted values
+        validated = {}
+        
+        if result.get("loan_amount") and isinstance(result["loan_amount"], (int, float)) and result["loan_amount"] > 0:
+            validated["loan_amount"] = float(result["loan_amount"])
+        
+        if result.get("income_monthly") and isinstance(result["income_monthly"], (int, float)) and result["income_monthly"] > 0:
+            validated["income_monthly"] = float(result["income_monthly"])
+        
+        if result.get("tenure_months") and isinstance(result["tenure_months"], (int, float)) and result["tenure_months"] > 0:
+            validated["tenure_months"] = int(result["tenure_months"])
+        
+        if result.get("age") and isinstance(result["age"], (int, float)) and 18 <= result["age"] <= 100:
+            validated["age"] = int(result["age"])
+        
+        if result.get("credit_score") and isinstance(result["credit_score"], (int, float)) and 300 <= result["credit_score"] <= 900:
+            validated["credit_score"] = int(result["credit_score"])
+        
+        if result.get("interest_rate") and isinstance(result["interest_rate"], (int, float)) and 1 <= result["interest_rate"] <= 30:
+            validated["interest_rate"] = float(result["interest_rate"])
+        
+        return validated
+        
+    except Exception as e:
+        logger.warning(f"LLM extraction failed: {e}, falling back to regex")
+        return _extract_values_regex_fallback(message)
 
 
-def _convert_tenure_to_months(value: float, unit: str) -> int:
+def _extract_values_regex_fallback(message: str) -> dict:
     """
-    Converts tenure to months based on unit.
-    
-    Examples:
-        (5, "years") -> 60
-        (36, "months") -> 36
-        (2.5, "yrs") -> 30
+    FALLBACK REGEX EXTRACTION
+    -------------------------
+    Used only if LLM extraction fails. Basic pattern matching.
     """
-    unit = unit.lower().strip()
-    
-    if unit in ['year', 'years', 'yr', 'yrs', 'y']:
-        return int(value * 12)
-    elif unit in ['month', 'months', 'mo', 'mos', 'm']:
-        return int(value)
-    else:
-        # Default: assume months if unit unclear
-        return int(value)
-
-
-def _extract_values_regex(message: str) -> dict:
-    """
-    PRE-LLM EXTRACTION using regex patterns.
-    This runs BEFORE the LLM to reliably extract numeric values.
-    
-    Extracts:
-    - loan_amount: From phrases like "loan of 10 lakhs", "10L loan", "borrow 50 lakh"
-    - income_monthly: From "salary 50000", "earn 5 lakh per month", "income 60k", "monthly income"
-    - tenure_months: From "5 years", "36 months", "tenure 10 yrs"
-    - age: From "age 35", "I am 28 years old"
-    - credit_score: From "credit score 750", "CIBIL 680"
-    - interest_rate: From "12%", "10.5% interest", "rate of 11"
-    """
-    extracted = {
-        "loan_amount": None,
-        "income_monthly": None,
-        "income_annual": None,  # Will be converted to monthly
-        "tenure_months": None,
-        "age": None,
-        "credit_score": None,
-        "interest_rate": None
-    }
-    
+    extracted = {}
     msg_lower = message.lower()
     
-    # ---- LOAN AMOUNT ----
-    # Patterns: "loan of 10 lakhs", "10L loan", "borrow 50 lakh", "loan amount 20 lacs"
-    loan_patterns = [
-        r'(?:loan|borrow|borrowing|principal|amount)[\s:]*(?:of\s+)?(?:rs\.?\s*)?(\d+(?:\.\d+)?\s*(?:cr|crore|crores|l|lakh|lakhs|lac|lacs|k|thousand)?)',
-        r'(\d+(?:\.\d+)?\s*(?:cr|crore|crores|l|lakh|lakhs|lac|lacs|k|thousand)?)\s*(?:rs\.?\s*)?(?:loan|for\s+loan)',
-        r'(?:need|want|require|looking\s+for)[\s:]*(?:rs\.?\s*)?(\d+(?:\.\d+)?\s*(?:cr|crore|crores|l|lakh|lakhs|lac|lacs|k|thousand)?)\s*(?:loan)?',
-    ]
+    # Loan amount - basic patterns
+    loan_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:lakh|lakhs|lac|lacs|l)\b', msg_lower)
+    if loan_match:
+        extracted["loan_amount"] = float(loan_match.group(1)) * 100000
     
-    for pattern in loan_patterns:
-        match = re.search(pattern, msg_lower)
-        if match:
-            extracted["loan_amount"] = _parse_indian_number(match.group(1))
-            break
+    crore_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:crore|crores|cr)\b', msg_lower)
+    if crore_match:
+        extracted["loan_amount"] = float(crore_match.group(1)) * 10000000
     
-    # ---- MONTHLY INCOME / SALARY ----
-    # Patterns: "salary 50000", "earn 5 lakh", "income 60k per month", "monthly income 80000"
-    monthly_income_patterns = [
-        r'(?:monthly\s+)?(?:salary|income|earn|earning|earns|making)[\s:]*(?:is\s+)?(?:rs\.?\s*)?(\d+(?:\.\d+)?\s*(?:cr|crore|crores|l|lakh|lakhs|lac|lacs|k|thousand)?)\s*(?:per\s+month|monthly|pm|/\s*month|a\s+month)?',
-        r'(?:i\s+)?(?:earn|make|get)[\s:]*(?:rs\.?\s*)?(\d+(?:\.\d+)?\s*(?:cr|crore|crores|l|lakh|lakhs|lac|lacs|k|thousand)?)\s*(?:per\s+month|monthly|pm|/\s*month|a\s+month)?',
-        r'(?:monthly\s+income|monthly\s+salary|salary\s+per\s+month|income\s+per\s+month)[\s:]*(?:is\s+)?(?:rs\.?\s*)?(\d+(?:\.\d+)?\s*(?:cr|crore|crores|l|lakh|lakhs|lac|lacs|k|thousand)?)',
-        r'(\d+(?:\.\d+)?\s*(?:cr|crore|crores|l|lakh|lakhs|lac|lacs|k|thousand)?)\s*(?:rs\.?\s*)?(?:salary|income|per\s+month|monthly)',
-    ]
+    # Income - basic patterns  
+    income_match = re.search(r'(?:earn|salary|income).*?(\d+(?:,\d+)*)', msg_lower)
+    if income_match:
+        income_val = income_match.group(1).replace(',', '')
+        extracted["income_monthly"] = float(income_val)
     
-    for pattern in monthly_income_patterns:
-        match = re.search(pattern, msg_lower)
-        if match:
-            extracted["income_monthly"] = _parse_indian_number(match.group(1))
-            break
-    
-    # ---- ANNUAL INCOME ----
-    # Patterns: "annual income 6 lakh", "yearly salary 8L", "income 10 lakh per annum"
-    annual_income_patterns = [
-        r'(?:annual|yearly|per\s+annum|pa|p\.a\.)\s*(?:salary|income|earning)?[\s:]*(?:is\s+)?(?:rs\.?\s*)?(\d+(?:\.\d+)?\s*(?:cr|crore|crores|l|lakh|lakhs|lac|lacs|k|thousand)?)',
-        r'(?:salary|income|earning)[\s:]*(?:is\s+)?(?:rs\.?\s*)?(\d+(?:\.\d+)?\s*(?:cr|crore|crores|l|lakh|lakhs|lac|lacs|k|thousand)?)\s*(?:annual|yearly|per\s+annum|pa|p\.a\.)',
-    ]
-    
-    for pattern in annual_income_patterns:
-        match = re.search(pattern, msg_lower)
-        if match:
-            annual = _parse_indian_number(match.group(1))
-            if annual:
-                extracted["income_annual"] = annual
-                # Convert to monthly if no monthly income already found
-                if not extracted["income_monthly"]:
-                    extracted["income_monthly"] = annual / 12
-            break
-    
-    # ---- TENURE ----
-    # Patterns: "5 years", "36 months", "tenure 10 yrs", "for 3 years"
+    # Tenure - more flexible patterns
     tenure_patterns = [
-        r'(?:tenure|term|period|duration|repayment)[\s:]*(?:of\s+)?(\d+(?:\.\d+)?)\s*(years?|yrs?|y|months?|mos?|m)',
-        r'(?:for|over|in)\s+(\d+(?:\.\d+)?)\s*(years?|yrs?|y|months?|mos?|m)',
-        r'(\d+(?:\.\d+)?)\s*(years?|yrs?|y|months?|mos?|m)\s*(?:tenure|term|period|loan)',
+        (r'(\d+)[\s\-]*year', 'years'),
+        (r'(\d+)\s*months?', 'months'),
     ]
-    
-    for pattern in tenure_patterns:
+    for pattern, unit in tenure_patterns:
         match = re.search(pattern, msg_lower)
         if match:
-            value = float(match.group(1))
-            unit = match.group(2)
-            extracted["tenure_months"] = _convert_tenure_to_months(value, unit)
+            val = int(match.group(1))
+            extracted["tenure_months"] = val * 12 if unit == 'years' else val
             break
     
-    # ---- AGE ----
-    # Patterns: "age 35", "I am 28 years old", "28 years", "aged 40"
-    age_patterns = [
-        r'(?:age|aged)[\s:]*(?:is\s+)?(\d+)',
-        r'(?:i\s+am|i\'m)\s+(\d+)\s*(?:years?\s*old)?',
-        r'(\d+)\s*(?:years?\s*old)',
-    ]
+    # Age
+    age_match = re.search(r'(?:i\s*am|age|aged)\s*(\d+)', msg_lower)
+    if age_match:
+        age_val = int(age_match.group(1))
+        if 18 <= age_val <= 100:
+            extracted["age"] = age_val
     
-    for pattern in age_patterns:
-        match = re.search(pattern, msg_lower)
-        if match:
-            age_val = int(match.group(1))
-            # Sanity check: age should be between 18 and 100
-            if 18 <= age_val <= 100:
-                extracted["age"] = age_val
-                break
+    # Credit score
+    credit_match = re.search(r'(?:credit|cibil|score).*?(\d{3})\b', msg_lower)
+    if credit_match:
+        score = int(credit_match.group(1))
+        if 300 <= score <= 900:
+            extracted["credit_score"] = score
     
-    # ---- CREDIT SCORE ----
-    # Patterns: "credit score 750", "CIBIL 680", "score of 720"
-    credit_patterns = [
-        r'(?:credit\s*score|cibil|cibil\s*score|score)[\s:]*(?:is\s+)?(\d{3})',
-        r'(\d{3})\s*(?:credit\s*score|cibil)',
-    ]
-    
-    for pattern in credit_patterns:
-        match = re.search(pattern, msg_lower)
-        if match:
-            score = int(match.group(1))
-            # Sanity check: credit score should be between 300 and 900
-            if 300 <= score <= 900:
-                extracted["credit_score"] = score
-                break
-    
-    # ---- INTEREST RATE ----
-    # Patterns: "12%", "10.5% interest", "rate of 11", "interest rate 9.5"
-    interest_patterns = [
-        r'(?:interest\s*rate|rate|roi|interest)[\s:]*(?:of\s+)?(\d+(?:\.\d+)?)\s*%?',
-        r'(\d+(?:\.\d+)?)\s*%\s*(?:interest|rate|roi)?',
-        r'@\s*(\d+(?:\.\d+)?)\s*%?',
-    ]
-    
-    for pattern in interest_patterns:
-        match = re.search(pattern, msg_lower)
-        if match:
-            rate = float(match.group(1))
-            # Sanity check: interest rate should be between 1 and 30
-            if 1 <= rate <= 30:
-                extracted["interest_rate"] = rate
-                break
-    
-    # Clean up: remove None values and annual income (already converted)
-    del extracted["income_annual"]
-    
-    return {k: v for k, v in extracted.items() if v is not None}
+    return extracted
 
 
 def classify_intent(user_message: str) -> str:
@@ -278,34 +230,35 @@ def process(user_message: str, current_state: dict) -> dict:
     """
     INTAKE AGENT WITH INTENT-BASED ROUTING
     --------------------------------------
-    1. FIRST: Extracts values using reliable regex patterns
+    1. FIRST: Extracts values using LLM-based intelligent analysis
     2. THEN: Classifies the user's intent
     3. FINALLY: Routes to appropriate flow
     
-    This two-stage approach ensures:
-    - Numeric values (loan amount, income, tenure) are reliably extracted
+    This approach ensures:
+    - Natural language understanding (not just regex patterns)
+    - "5-year time period", "repay over 5 years", etc. all work
     - Tenure in years is auto-converted to months
     - Annual income is auto-converted to monthly income
     - Indian number formats (lakhs, crores) are properly parsed
     """
     
-    # Step 1: PRE-LLM EXTRACTION using regex (reliable)
-    regex_extracted = _extract_values_regex(user_message)
-    logger.info(f"Regex extraction result: {regex_extracted}")
+    # Step 1: LLM-BASED EXTRACTION (intelligent, understands natural language)
+    llm_extracted = _extract_entities_with_llm(user_message)
+    logger.info(f"LLM extraction result: {llm_extracted}")
     
     # Step 2: Classify the intent
     intent = classify_intent(user_message)
     logger.info(f"Intent classified as: {intent}")
     
-    # Step 3: Merge regex-extracted values with current state
-    # New values from regex override old values
+    # Step 3: Merge LLM-extracted values with current state
+    # New values from LLM override old values
     merged_state = {
-        "loan_amount": regex_extracted.get("loan_amount") or current_state.get("loan_amount"),
-        "income_monthly": regex_extracted.get("income_monthly") or current_state.get("income_monthly"),
-        "tenure_months": regex_extracted.get("tenure_months") or current_state.get("tenure_months"),
-        "age": regex_extracted.get("age") or current_state.get("age"),
-        "credit_score": regex_extracted.get("credit_score") or current_state.get("credit_score"),
-        "interest_rate": regex_extracted.get("interest_rate") or current_state.get("interest_rate") or 12.5,
+        "loan_amount": llm_extracted.get("loan_amount") or current_state.get("loan_amount"),
+        "income_monthly": llm_extracted.get("income_monthly") or current_state.get("income_monthly"),
+        "tenure_months": llm_extracted.get("tenure_months") or current_state.get("tenure_months"),
+        "age": llm_extracted.get("age") or current_state.get("age"),
+        "credit_score": llm_extracted.get("credit_score") or current_state.get("credit_score"),
+        "interest_rate": llm_extracted.get("interest_rate") or current_state.get("interest_rate") or 12.5,
     }
     
     # Step 4: For policy questions, general queries - skip data collection
@@ -357,7 +310,7 @@ def process(user_message: str, current_state: dict) -> dict:
 
 
 # ============================================================
-#  SECTION 2 — DEMO / TEST
+#  SECTION 3 — DEMO / TEST
 # ============================================================
 
 if __name__ == "__main__":
@@ -370,14 +323,19 @@ if __name__ == "__main__":
         "Need 1 crore loan, tenure 20 yrs, I earn 1.5L monthly",
         "What is the interest rate for home loan?",
         "loan amount 15 lacs, tenure 10 years, monthly salary 80k",
+        # New test cases for natural language understanding
+        "I want a home loan of 20 lakhs. I am 30 years old, and I earn 80000 per month and I want to repay over a 5-year time period. My credit score is 750",
+        "I need 50 lakhs for 10-year period",
+        "repay in 3 years with monthly salary of 1 lakh",
     ]
     
     print("=" * 70)
-    print("  INTAKE AGENT - VALUE EXTRACTION TEST")
+    print("  INTAKE AGENT - LLM-BASED ENTITY EXTRACTION TEST")
     print("=" * 70)
     
     for test in test_cases:
-        result = _extract_values_regex(test)
         print(f"\nInput: {test}")
-        print(f"Extracted: {result}")
+        print("-" * 50)
+        result = _extract_entities_with_llm(test)
+        print(f"LLM Extracted: {result}")
         print("-" * 70)
