@@ -10,6 +10,9 @@ from backend.schemas import ChatRequest, ChatResponse, RagQueryRequest, RagQuery
 from backend.orchestrator import handle_chat
 from backend.adapters import rag_adapter
 
+# Import cache setup
+from perf.cache import setup_inmemory_cache, llm_cache, retrieval_cache
+
 # Load environment variables
 load_dotenv()
 
@@ -21,6 +24,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Loan Approval & Credit Risk Assistant API")
+
+# Initialize caching at startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize caches when the application starts."""
+    setup_inmemory_cache()
+    logger.info("Cache system initialized successfully")
+
 
 # Simple in-memory rate limiter
 class SimpleRateLimiter:
@@ -88,8 +99,30 @@ async def upload_document(file: UploadFile = File(...), req: Request = None):
         # Pass it to the RAG Adapter to store in ChromaDB
         chunks_added = rag_adapter.add_document(text_content, file.filename)
         
+        # Clear retrieval cache when new document is added
+        retrieval_cache.clear()
+        logger.info(f"Retrieval cache cleared after document upload")
+        
         logger.info(f"Document {file.filename} ingested with {chunks_added} chunks")
         return {"status": "success", "filename": file.filename, "chunks_added": chunks_added}
     except Exception as e:
         logger.error(f"Upload error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
+
+
+@app.get("/cache/stats")
+async def cache_stats():
+    """Endpoint to view cache statistics - useful for monitoring and debugging."""
+    return {
+        "llm_cache": llm_cache.stats(),
+        "retrieval_cache": retrieval_cache.stats()
+    }
+
+
+@app.post("/cache/clear")
+async def clear_cache():
+    """Endpoint to manually clear all caches."""
+    llm_cache.clear()
+    retrieval_cache.clear()
+    logger.info("All caches cleared manually")
+    return {"status": "success", "message": "All caches cleared"}
