@@ -81,7 +81,7 @@ def retrieve(query: str, k: int = DEFAULT_K) -> list[dict]:
             formatted_results.append({
                 "text": doc.page_content,
                 "score": float(score), 
-                "source": doc.metadata.get("source", "master_policy_document.txt"),
+                "source": doc.metadata.get("source", "master_policy_doc.txt"),
                 "section": doc.metadata.get("section", "General")
             })
         return formatted_results

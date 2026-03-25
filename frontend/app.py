@@ -4,7 +4,7 @@ import requests
 import uuid
 import time
 import os
-from frontend.ui_components import (
+from ui_components import (
     render_decision_card, 
     render_tool_results, 
     render_evidence_panel, 
