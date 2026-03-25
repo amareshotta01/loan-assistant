@@ -1,5 +1,6 @@
 # backend/orchestrator.py
 import time
+import logging
 from backend.schemas import ChatResponse, DecisionModel, ToolResultsModel, RagMetadataModel, GuardrailsModel, LatencyModel
 from backend import memory_store
 from backend.adapters import guardrails_adapter
@@ -7,8 +8,11 @@ from backend.adapters import guardrails_adapter
 # Import our new Autonomous Agents
 from backend.agents import intake_agent, retrieval_agent, tool_agent, decision_agent
 
+logger = logging.getLogger(__name__)
+
 async def handle_chat(session_id: str, message: str, metadata: dict = None) -> ChatResponse:
     t0 = time.time()
+    latency_tracker = {"retrieval": 0.0, "llm": 0.0}  # Track individual component latencies
     agent_trace = []  # Track which agents were involved
     
     # 1. SECURITY: Input Guardrails - ALWAYS runs first
@@ -48,13 +52,19 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
     
     # ROUTE 1: POLICY QUESTIONS -> Go directly to RAG
     if route_to == "rag" or intent == "policy_question":
+        t_rag_start = time.time()
         rag_data = retrieval_agent.process(safe_message)
+        latency_tracker["retrieval"] = (time.time() - t_rag_start) * 1000
+        
         rag_model = RagMetadataModel(used=rag_data["used_rag"], top_k=len(rag_data["chunks"]), chunks=rag_data["chunks"])
         agent_trace.append({"step": 3, "agent": "Retrieval Agent", "action": f"RAG Search - Found {rag_model.top_k} chunks", "data": [c['source'] for c in rag_data.get('chunks', [])]})
         
         # Use decision agent to formulate response based on RAG data
         chat_history = state.get("summary", "No history yet.")
+        t_llm_start = time.time()
         reply, decision_dict = decision_agent.process(safe_message, {}, rag_data, chat_history)
+        latency_tracker["llm"] = (time.time() - t_llm_start) * 1000
+        
         decision_model = DecisionModel(**decision_dict)
         agent_trace.append({"step": 4, "agent": "Decision Agent", "action": "Generated RAG Response", "data": decision_dict})
         
@@ -64,7 +74,7 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
             reply = verdict_out.get("safe_text", "Output redacted for safety.")
         
         memory_store.save(session_id, state, safe_message, reply)
-        return _build_response(session_id, reply, decision_model, ToolResultsModel(), rag_model, verdict_in, state, t0, verdict_out, agent_trace)
+        return _build_response(session_id, reply, decision_model, ToolResultsModel(), rag_model, verdict_in, state, t0, verdict_out, agent_trace, latency_tracker)
     
     # ROUTE 2: GENERAL QUERIES -> Simple response
     if route_to == "general" or intent == "general":
@@ -84,7 +94,10 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
         
         # Decision agent will generate structured response for calculations
         chat_history = state.get("summary", "No history yet.")
+        t_llm_start = time.time()
         reply, decision_dict = decision_agent.process(safe_message, tool_results_dict, {"used_rag": False, "chunks": []}, chat_history)
+        latency_tracker["llm"] = (time.time() - t_llm_start) * 1000
+        
         decision_model = DecisionModel(**decision_dict)
         agent_trace.append({"step": 4, "agent": "Decision Agent", "action": "Generated Calculation Response", "data": decision_dict})
         
@@ -94,7 +107,7 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
             reply = verdict_out.get("safe_text", "Output redacted for safety.")
         
         memory_store.save(session_id, state, safe_message, reply)
-        return _build_response(session_id, reply, decision_model, tool_model, RagMetadataModel(), verdict_in, state, t0, verdict_out, agent_trace)
+        return _build_response(session_id, reply, decision_model, tool_model, RagMetadataModel(), verdict_in, state, t0, verdict_out, agent_trace, latency_tracker)
     
     # ROUTE 4: LOAN APPLICATION -> Collect data, then process
     if extracted_data.get("missing_fields"):
@@ -104,7 +117,10 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
 
     # ROUTE 5: FULL LOAN PROCESSING (with all data available)
     # AGENT 2: RETRIEVAL AGENT (for additional context)
+    t_rag_start = time.time()
     rag_data = retrieval_agent.process(safe_message)
+    latency_tracker["retrieval"] = (time.time() - t_rag_start) * 1000
+    
     rag_model = RagMetadataModel(used=rag_data["used_rag"], top_k=len(rag_data["chunks"]), chunks=rag_data["chunks"])
     agent_trace.append({"step": 3, "agent": "Retrieval Agent", "action": f"Searched Vector DB. Found {rag_model.top_k} chunks.", "data": [c['source'] for c in rag_data.get('chunks', [])]})
 
@@ -115,7 +131,10 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
 
     # AGENT 4: DECISION AGENT
     chat_history = state.get("summary", "No history yet.")
+    t_llm_start = time.time()
     reply, decision_dict = decision_agent.process(safe_message, tool_results_dict, rag_data, chat_history)
+    latency_tracker["llm"] = (time.time() - t_llm_start) * 1000
+    
     decision_model = DecisionModel(**decision_dict)
     agent_trace.append({"step": 5, "agent": "Decision Agent", "action": "Made Final Credit Verdict", "data": decision_dict})
 
@@ -127,24 +146,31 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
     # 4. MEMORY: Save updated state
     memory_store.save(session_id, state, safe_message, reply)
 
-    return _build_response(session_id, reply, decision_model, tool_model, rag_model, verdict_in, state, t0, verdict_out, agent_trace)
+    return _build_response(session_id, reply, decision_model, tool_model, rag_model, verdict_in, state, t0, verdict_out, agent_trace, latency_tracker)
 
-# Update the build response to accept the trace
-def _build_response(session_id, reply, decision, tool_model, rag_model, verdict_in, state, t0, verdict_out=None, agent_trace=None):
+# Update the build response to accept the trace and latency tracking
+def _build_response(session_id, reply, decision, tool_model, rag_model, verdict_in, state, t0, verdict_out=None, agent_trace=None, latency_tracker=None):
     if not verdict_out: verdict_out = {"action": "ALLOW", "categories": []}
     if not agent_trace: agent_trace = []
+    if not latency_tracker: latency_tracker = {"retrieval": 0.0, "llm": 0.0}
+    
+    end_to_end = round((time.time() - t0) * 1000, 2)
     
     return ChatResponse(
         session_id=session_id, reply=reply, decision=decision, collected_inputs=state["entities"],
         tool_results=tool_model, rag=rag_model,
         guardrails=GuardrailsModel(input_action=verdict_in["action"], output_action=verdict_out["action"], categories=verdict_in.get("categories", [])),
-        agent_trace=agent_trace, # <--- PASSING IT TO THE FRONTEND
-        latency_ms=LatencyModel(end_to_end=round((time.time() - t0)*1000, 2))
+        agent_trace=agent_trace,
+        latency_ms=LatencyModel(
+            retrieval=round(latency_tracker.get("retrieval", 0.0), 2),
+            llm=round(latency_tracker.get("llm", 0.0), 2),
+            end_to_end=end_to_end
+        )
     )
 
 def _build_safe_response(session_id, reply, verdict, t0):
     return ChatResponse(
         session_id=session_id, reply=reply, decision=DecisionModel(), tool_results=ToolResultsModel(), rag=RagMetadataModel(),
         guardrails=GuardrailsModel(input_action=verdict["action"], categories=verdict.get("categories", [])),
-        latency_ms=LatencyModel(end_to_end=round((time.time() - t0)*1000, 2))
+        latency_ms=LatencyModel(end_to_end=round((time.time() - t0) * 1000, 2))
     )
