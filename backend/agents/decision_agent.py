@@ -1,7 +1,15 @@
+import os
+import logging
 from langchain_community.chat_models import ChatOllama
 from langchain_core.prompts import PromptTemplate
 
-llm = ChatOllama(model="mistral", temperature=0.0)  # Set to 0 for deterministic responses
+logger = logging.getLogger(__name__)
+
+# Environment variable configuration
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral")
+OLLAMA_TEMPERATURE = float(os.getenv("OLLAMA_TEMPERATURE", "0.0"))
+
+llm = ChatOllama(model=OLLAMA_MODEL, temperature=OLLAMA_TEMPERATURE)
 
 
 def _is_emi_calculation(user_message: str, tool_results: dict) -> bool:

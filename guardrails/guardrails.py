@@ -29,7 +29,9 @@ PII_PATTERNS = {
     "phone":        (r"\b(\+91[\-\s]?)?[6-9]\d{9}\b",                             "[PHONE REDACTED]"),
     "email":        (r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Z|a-z]{2,}\b",   "[EMAIL REDACTED]"),
     "credit_card":  (r"\b(?:\d[ -]?){13,16}\b",                                   "[CARD REDACTED]"),
-    "bank_account": (r"\b[0-9]{9,18}\b",                                           "[ACCOUNT REDACTED]"),
+    # Bank account pattern now requires context to avoid false positives on loan amounts
+    # Matches patterns like "account: 123456789", "acc no 123456789", "account number 123456789012"
+    "bank_account": (r"(?:account|acc|a/c)[\s.:]*(?:no\.?|number)?[\s.:]*([0-9]{9,18})\b", "[ACCOUNT REDACTED]"),
     "ifsc":         (r"\b[A-Z]{4}0[A-Z0-9]{6}\b",                                 "[IFSC REDACTED]"),
     "dob":          (r"\b(0?[1-9]|[12][0-9]|3[01])[\/\-](0?[1-9]|1[0-2])[\/\-]\d{2,4}\b", "[DOB REDACTED]"),
     "passport":     (r"\b[A-PR-WY][1-9]\d\s?\d{4}[1-9]\b",                        "[PASSPORT REDACTED]"),

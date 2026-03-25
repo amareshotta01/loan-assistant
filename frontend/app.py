@@ -3,7 +3,8 @@ import streamlit as st
 import requests
 import uuid
 import time
-from ui_components import (
+import os
+from frontend.ui_components import (
     render_decision_card, 
     render_tool_results, 
     render_evidence_panel, 
@@ -11,7 +12,8 @@ from ui_components import (
     render_agent_trace
 )
 
-API_URL = "http://localhost:8000"
+# Use environment variable for API URL with localhost fallback for development
+API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 # --- Page Config ---
 st.set_page_config(page_title="Loan Assistant", page_icon="🏦", layout="wide")
