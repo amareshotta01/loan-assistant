@@ -396,7 +396,7 @@ def get_safe_response(category: str) -> str:
 #  Helps orchestrator understand query context
 # ============================================================
 
-# Financial/Loan context keywords
+# Financial/Loan context keywords - expanded for better coverage
 FINANCIAL_KEYWORDS = [
     r'\b(?:loan|emi|interest|principal|tenure|credit|cibil|eligibility)\b',
     r'\b(?:lakh|lakhs|crore|crores|rupees|rs\.?|inr)\b',
@@ -404,6 +404,14 @@ FINANCIAL_KEYWORDS = [
     r'\b(?:home\s*loan|personal\s*loan|car\s*loan|education\s*loan)\b',
     r'\b(?:mortgage|repayment|foreclosure|prepayment)\b',
     r'\b(?:processing\s*fee|documentation|documents|kyc)\b',
+    # Added: time period patterns for loan tenure
+    r'\b(?:\d+[\s\-]*year|\d+[\s\-]*month|time\s*period|repay\s*(?:over|in))\b',
+    # Added: age patterns
+    r'\b(?:years?\s*old|age\s*\d+|i\s*am\s*\d+)\b',
+    # Added: credit score patterns
+    r'\b(?:credit\s*score|cibil\s*score|score\s*is\s*\d+)\b',
+    # Added: borrow/apply patterns
+    r'\b(?:borrow|apply|application|want\s*(?:a|to))\b',
 ]
 
 # Policy/Information seeking keywords
@@ -411,6 +419,7 @@ POLICY_KEYWORDS = [
     r'\b(?:what\s*is|what\s*are|how\s*(?:do|does|to|much)|tell\s*me|explain)\b',
     r'\b(?:policy|policies|rules|criteria|requirements|eligibility)\b',
     r'\b(?:rate|rates|percentage|minimum|maximum)\b',
+    r'\b(?:fee|fees|charges|penalty|penalties)\b',
 ]
 
 # Calculation request keywords
@@ -418,6 +427,7 @@ CALCULATION_KEYWORDS = [
     r'\b(?:calculate|compute|find\s*out|check|estimate)\b',
     r'\b(?:emi|monthly\s*payment|installment|payable)\b',
     r'\b(?:how\s*much\s*(?:will|can|do))\b',
+    r'\b(?:eligible|eligibility\s*check)\b',
 ]
 
 
