@@ -40,33 +40,59 @@ PII_PATTERNS = {
 # ============================================================
 #  SECTION 2 — HARMFUL CONTENT PATTERNS
 #  These are the bad content types we detect
+#  NOTE: Patterns are case-insensitive and use flexible matching
 # ============================================================
 
 HARMFUL_PATTERNS = {
 
     "profanity": [
-        r"\b(fuck|shit|bastard|bitch|asshole|damn|crap|dick|cock|whore|slut)\b",
-        r"\b(bc|mc|bkl|bhenchod|madarchod|chutiya|saala|harami)\b",
+        # Common English profanity - with flexible word boundaries
+        r"(?:^|[\s\.,!?;:\-_\(\)\[\]])(?:f+u+c+k+|sh+i+t+|bastard|b+i+t+c+h+|a+s+s+h+o+l+e+|d+a+m+n+|crap|d+i+c+k+|cock|wh+o+r+e+|sl+u+t+)(?:$|[\s\.,!?;:\-_\(\)\[\]])",
+        # With leet speak variations (f*ck, sh!t, etc.)
+        r"(?:f[\*\@\#]ck|sh[\*\@\#\!]t|b[\*\@\#]tch|a[\*\@\#]s)",
+        # Hindi/Indian profanity - more flexible matching
+        r"(?:^|[\s\.,!?;:\-_\(\)\[\]])(?:bc|mc|bkl|bhenchod|madarchod|chutiya|saala|harami|gaandu|bhosdike|randi)(?:$|[\s\.,!?;:\-_\(\)\[\]])",
+        # Spaced out profanity (f u c k, s h i t)
+        r"f\s*u\s*c\s*k",
+        r"s\s*h\s*i\s*t",
+        r"b\s*i\s*t\s*c\s*h",
     ],
 
     "hate_speech": [
-        r"\b(nigger|faggot|retard|jihadi)\b",
-        r"\b(all\s+(muslims?|hindus?|christians?|sikhs?)\s+are\s+(bad|evil|terrorist|dirty))\b",
-        r"\b(kill\s+all\s+\w+)\b",
+        # Racial/ethnic slurs
+        r"(?:^|[\s\.,!?;:\-_\(\)\[\]])(?:nigger|nigga|faggot|fag|retard|jihadi|terrorist)(?:$|[\s\.,!?;:\-_\(\)\[\]])",
+        # Hate against religious groups
+        r"(?:all|every)\s*(?:muslims?|hindus?|christians?|sikhs?|jews?)\s*(?:are|is|should)\s*(?:bad|evil|terrorist|dirty|die|killed)",
+        # Kill/harm groups
+        r"(?:kill|murder|exterminate|eliminate)\s*(?:all)?\s*(?:muslims?|hindus?|christians?|sikhs?|jews?|blacks?|whites?)",
+        # Generic hate patterns
+        r"(?:death\s*to|hate\s*all)\s*\w+",
     ],
 
     "abuse": [
-        r"\b(i.?ll\s+(kill|hurt|destroy|attack)\s+(you|your))\b",
-        r"\b(you\s+(are|r)\s+(stupid|idiot|moron|dumb|useless|worthless))\b",
-        r"\b(go\s+(die|to\s+hell))\b",
-        r"\b(shut\s+the\s+fuck\s+up)\b",
+        # Threats to harm
+        r"(?:i'?ll?|ima?|going\s*to|gonna)\s*(?:kill|hurt|destroy|attack|murder|beat)\s*(?:you|your|u)",
+        # Direct insults
+        r"(?:you|u|ur)\s*(?:are|r|is)?\s*(?:a\s*)?(?:stupid|idiot|moron|dumb|useless|worthless|pathetic|loser|trash|garbage)",
+        # Death wishes
+        r"(?:go\s*(?:and\s*)?(?:die|to\s*hell|kill\s*yourself))",
+        # Shut up variations
+        r"(?:shut\s*(?:the\s*)?(?:f+u+c+k+\s*)?up)",
+        # Aggressive commands
+        r"(?:i\s*hope\s*you\s*die|drop\s*dead|eat\s*shit)",
     ],
 
     "self_harm": [
-        r"\b(kill\s+myself|suicide|end\s+my\s+life|want\s+to\s+die)\b",
-        r"\b(no\s+reason\s+to\s+live|don.?t\s+want\s+to\s+live)\b",
-        r"\b(overdose|hang\s+myself|jump\s+off)\b",
-        r"\b(self[\s\-]harm|cut\s+myself)\b",
+        # Suicidal ideation
+        r"(?:kill\s*myself|commit\s*suicide|end\s*(?:my\s*)?life|want\s*to\s*die|wanna\s*die)",
+        # Hopelessness
+        r"(?:no\s*reason\s*to\s*live|don'?t\s*want\s*to\s*live|life\s*is\s*(?:not\s*)?worth)",
+        # Methods (trigger warning - necessary for detection)
+        r"(?:overdose|hang\s*myself|jump\s*off|slit\s*(?:my\s*)?wrists?)",
+        # Self-harm
+        r"(?:self[\s\-]?harm|cut\s*myself|hurt\s*myself)",
+        # Direct statements
+        r"(?:i\s*(?:want|wanna|gonna|will)\s*(?:to\s*)?(?:kill|end|hurt)\s*myself)",
     ],
 }
 
@@ -113,6 +139,43 @@ SAFE_RESPONSES = {
 #  This is where the agent "decides" what to do
 # ============================================================
 
+def _normalize_text(text: str) -> str:
+    """
+    Normalize text to catch common evasion techniques:
+    - Remove zero-width characters
+    - Normalize unicode variations
+    - Handle common character substitutions
+    """
+    import unicodedata
+    
+    # Normalize unicode
+    normalized = unicodedata.normalize('NFKD', text)
+    
+    # Common leetspeak/substitution mapping
+    substitutions = {
+        '@': 'a', '4': 'a', '^': 'a',
+        '3': 'e', '€': 'e',
+        '1': 'i', '!': 'i', '|': 'i',
+        '0': 'o', 
+        '$': 's', '5': 's',
+        '7': 't', '+': 't',
+        '\/': 'v',
+        '\/\/': 'w',
+        '><': 'x',
+        '`/': 'y',
+        '2': 'z',
+    }
+    
+    result = normalized.lower()
+    for old, new in substitutions.items():
+        result = result.replace(old, new)
+    
+    # Remove extra spaces between characters (to catch "f u c k")
+    # But keep single spaces for word separation
+    
+    return result
+
+
 def _agent_decide(text: str) -> str:
     """
     AGENT DECISION FUNCTION
@@ -121,23 +184,37 @@ def _agent_decide(text: str) -> str:
     This is the 'brain' of the guardrail agent.
 
     Decision Priority:
-    1. self_harm   (highest — human safety first)
+    1. self_harm   (highest - human safety first)
     2. hate_speech
     3. abuse
     4. profanity
     5. pii         (redact but allow)
     6. clean       (pass through)
     """
-    lower = text.lower()
-
+    # Normalize the text to catch evasion attempts
+    normalized = _normalize_text(text)
+    original_lower = text.lower()
+    
+    # Check both original and normalized versions
+    texts_to_check = [original_lower, normalized]
+    
     for category in ["self_harm", "hate_speech", "abuse", "profanity"]:
         for pattern in HARMFUL_PATTERNS[category]:
-            if re.search(pattern, lower, re.IGNORECASE):
-                return category
+            for check_text in texts_to_check:
+                try:
+                    if re.search(pattern, check_text, re.IGNORECASE):
+                        return category
+                except re.error:
+                    # If pattern fails, skip it
+                    continue
 
+    # Check PII on original text (not normalized)
     for pii_type, (pattern, _) in PII_PATTERNS.items():
-        if re.search(pattern, text, re.IGNORECASE):
-            return "pii"
+        try:
+            if re.search(pattern, text, re.IGNORECASE):
+                return "pii"
+        except re.error:
+            continue
 
     return "clean"
 

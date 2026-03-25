@@ -15,7 +15,15 @@ class RagQueryRequest(BaseModel):
 
 # --- Nested Response Models ---
 class DecisionModel(BaseModel):
-    status: str = "NEED_MORE_INFO" # APPROVE|REJECT|MANUAL_REVIEW|NEED_MORE_INFO
+    # Status options:
+    # - APPROVE: Loan application approved
+    # - REJECT: Loan application rejected
+    # - MANUAL_REVIEW: Needs human review
+    # - NEED_MORE_INFO: Missing required financial data
+    # - INFO_PROVIDED: Policy/information question answered (RAG response)
+    # - GREETING: General greeting/help response
+    # - PENDING: Awaiting complete information
+    status: str = "NEED_MORE_INFO"
     reasoning: List[str] = []
     confidence: float = 0.0
 
