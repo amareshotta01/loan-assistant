@@ -7,6 +7,7 @@ What this does:
 - Acts as an autonomous agent at Step 2 (input) and Step 7 (output)
 - Detects harmful content: profanity, hate speech, abuse, self-harm
 - Detects and redacts PII: Aadhaar, PAN, phone, email, etc.
+- Provides intent hints for better context understanding
 - Makes its own decision on what action to take (that's the agent part)
 
 How it connects:
@@ -16,6 +17,9 @@ How it connects:
 """
 
 import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================
@@ -359,7 +363,94 @@ def get_safe_response(category: str) -> str:
 
 
 # ============================================================
-#  SECTION 6 — QUICK DEMO
+#  SECTION 6 — INTENT HINTS (Context Detection)
+#  Helps orchestrator understand query context
+# ============================================================
+
+# Financial/Loan context keywords
+FINANCIAL_KEYWORDS = [
+    r'\b(?:loan|emi|interest|principal|tenure|credit|cibil|eligibility)\b',
+    r'\b(?:lakh|lakhs|crore|crores|rupees|rs\.?|inr)\b',
+    r'\b(?:salary|income|earn|earning|monthly|annual|yearly)\b',
+    r'\b(?:home\s*loan|personal\s*loan|car\s*loan|education\s*loan)\b',
+    r'\b(?:mortgage|repayment|foreclosure|prepayment)\b',
+    r'\b(?:processing\s*fee|documentation|documents|kyc)\b',
+]
+
+# Policy/Information seeking keywords
+POLICY_KEYWORDS = [
+    r'\b(?:what\s*is|what\s*are|how\s*(?:do|does|to|much)|tell\s*me|explain)\b',
+    r'\b(?:policy|policies|rules|criteria|requirements|eligibility)\b',
+    r'\b(?:rate|rates|percentage|minimum|maximum)\b',
+]
+
+# Calculation request keywords
+CALCULATION_KEYWORDS = [
+    r'\b(?:calculate|compute|find\s*out|check|estimate)\b',
+    r'\b(?:emi|monthly\s*payment|installment|payable)\b',
+    r'\b(?:how\s*much\s*(?:will|can|do))\b',
+]
+
+
+def detect_intent_hints(text: str) -> dict:
+    """
+    INTENT HINTS DETECTION
+    ----------------------
+    Provides hints about the user's intent based on keyword patterns.
+    This is a lightweight, fast check that helps the orchestrator
+    make better routing decisions.
+    
+    Returns:
+        {
+            "is_financial": bool,    # Contains loan/financial context
+            "is_policy_query": bool, # Asking about policies/rules
+            "is_calculation": bool,  # Wants something calculated
+            "confidence": float,     # 0.0 to 1.0
+            "detected_keywords": list
+        }
+    """
+    text_lower = text.lower()
+    detected = []
+    
+    # Check for financial context
+    is_financial = False
+    for pattern in FINANCIAL_KEYWORDS:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            is_financial = True
+            detected.append(f"financial:{pattern}")
+            break
+    
+    # Check for policy/information seeking
+    is_policy = False
+    for pattern in POLICY_KEYWORDS:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            is_policy = True
+            detected.append(f"policy:{pattern}")
+            break
+    
+    # Check for calculation requests
+    is_calculation = False
+    for pattern in CALCULATION_KEYWORDS:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            is_calculation = True
+            detected.append(f"calculation:{pattern}")
+            break
+    
+    # Calculate confidence based on how many hints were found
+    hints_found = sum([is_financial, is_policy, is_calculation])
+    confidence = min(1.0, hints_found * 0.4) if hints_found > 0 else 0.0
+    
+    return {
+        "is_financial": is_financial,
+        "is_policy_query": is_policy,
+        "is_calculation": is_calculation,
+        "confidence": confidence,
+        "detected_keywords": detected
+    }
+
+
+# ============================================================
+#  SECTION 7 — QUICK DEMO
 #  Run: python guardrails.py
 # ============================================================
 
