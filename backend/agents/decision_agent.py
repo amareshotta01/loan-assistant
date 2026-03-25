@@ -36,16 +36,94 @@ def _is_policy_question(tool_results: dict, rag_data: dict) -> bool:
     # If we have RAG data but no meaningful tool calculations, it's a policy question
     return has_rag and not has_tools
 
+def _is_off_topic_query(user_message: str, rag_data: dict) -> bool:
+    """
+    Dynamically detect if a query is off-topic by checking:
+    1. RAG returned no relevant chunks (or very low relevance)
+    2. The query doesn't match loan/finance keywords
+    
+    This provides a fallback for when the LLM intent detection misses off-topic queries.
+    """
+    # Check if RAG found any relevant content
+    chunks = rag_data.get("chunks", [])
+    has_relevant_rag = len(chunks) > 0
+    
+    # If RAG found content, check the relevance scores if available
+    if has_relevant_rag:
+        # Check if any chunk has good relevance (some RAG implementations include scores)
+        # For now, we assume if chunks are returned, they might be relevant
+        pass
+    
+    # Financial/loan keywords that indicate on-topic queries
+    financial_keywords = [
+        "loan", "emi", "interest", "credit", "cibil", "eligibility",
+        "income", "salary", "lakh", "crore", "rupee", "rs", "inr",
+        "tenure", "mortgage", "repayment", "principal", "rate",
+        "fee", "charge", "document", "kyc", "apply", "application",
+        "borrow", "bank", "financial", "payment", "installment"
+    ]
+    
+    message_lower = user_message.lower()
+    has_financial_context = any(kw in message_lower for kw in financial_keywords)
+    
+    # If no RAG results AND no financial keywords, likely off-topic
+    if not has_relevant_rag and not has_financial_context:
+        return True
+    
+    return False
 
-def process(user_message: str, tool_results: dict, rag_data: dict, chat_history: str) -> tuple[str, dict]:
+
+
+def process(user_message: str, tool_results: dict, rag_data: dict, chat_history: str, intent_hints: dict = None) -> tuple[str, dict]:
     """
     DECISION AGENT
     --------------
-    Handles three types of responses:
-    1. EMI Calculations: Direct calculation results with minimal LLM involvement
-    2. Policy Questions: Uses RAG data to answer informational queries
-    3. Loan Decisions: Uses tool results to make approval/rejection decisions
+    Handles four types of responses:
+    1. Off-Topic Queries: Questions unrelated to loans/banking
+    2. EMI Calculations: Direct calculation results with minimal LLM involvement
+    3. Policy Questions: Uses RAG data to answer informational queries
+    4. Loan Decisions: Uses tool results to make approval/rejection decisions
+    
+    Args:
+        user_message: The user's query
+        tool_results: Results from financial tools (EMI, eligibility, risk)
+        rag_data: Retrieved policy documents
+        chat_history: Conversation history
+        intent_hints: Optional intent analysis from guardrails (is_off_topic, is_financial, etc.)
     """
+    
+    # CHECK 0: Is this an off-topic query?
+    # First check intent_hints from guardrails if available
+    is_off_topic_from_llm = False
+    off_topic_reason = None
+    
+    if intent_hints:
+        is_off_topic_from_llm = intent_hints.get("is_off_topic", False)
+        off_topic_reason = intent_hints.get("off_topic_reason", "")
+    
+    # Also do a dynamic check based on RAG results and content
+    is_off_topic_dynamic = _is_off_topic_query(user_message, rag_data)
+    
+    # Combine both checks - if either flags it as off-topic
+    if is_off_topic_from_llm or is_off_topic_dynamic:
+        reply = (
+            "I'm a Loan Assistant and can only help with loan-related queries such as:\n"
+            "- Loan applications and eligibility\n"
+            "- EMI calculations\n"
+            "- Interest rates and fees\n"
+            "- Policy and documentation questions\n\n"
+            "Your question appears to be about something else"
+        )
+        if off_topic_reason:
+            reply += f" ({off_topic_reason})"
+        reply += ". Please ask me about loans or banking services!"
+        
+        decision = {
+            "status": "OFF_TOPIC",
+            "reasoning": [f"Query unrelated to loans/banking: {off_topic_reason or 'No financial context detected'}"],
+            "confidence": 0.9
+        }
+        return reply, decision
     
     # CHECK 1: Is this an EMI calculation request? Handle with direct response (no hallucination)
     if _is_emi_calculation(user_message, tool_results):
@@ -91,12 +169,13 @@ Note: This is a standard reducing balance EMI calculation. Actual EMI may vary b
         
         CRITICAL RULES - FOLLOW EXACTLY:
         1. ONLY use information that is EXPLICITLY stated in the POLICY DOCUMENTS above.
-        2. If the answer is NOT in the context, respond: "I don't have information about that in our policy documents. Please contact customer support for more details."
-        3. DO NOT invent, assume, or add ANY information not in the context.
-        4. DO NOT mention websites, portals, phone numbers, or contact details unless they are in the context.
-        5. Quote specific policy text when possible.
-        6. Keep your response concise and factual.
-        7. Use Rs. for Indian Rupee amounts.
+        2. If the answer is NOT in the context, respond EXACTLY with: "I'm a Loan Assistant and can only help with loan-related queries. I don't have information about that topic. Please ask me about loans, EMI, interest rates, eligibility, or other banking services!"
+        3. If the answer is NOT in the context, respond: "I don't have information about that in our policy documents. Please contact customer support for more details."
+        4. DO NOT invent, assume, or add ANY information not in the context.
+        5. DO NOT mention websites, portals, phone numbers, or contact details unless they are in the context.
+        6. Quote specific policy text when possible.
+        7. Keep your response concise and factual.
+        8. Use Rs. for Indian Rupee amounts.
         """
         
         # Format RAG chunks for the prompt
@@ -105,6 +184,23 @@ Note: This is a standard reducing balance EMI calculation. Actual EMI may vary b
             for chunk in rag_data.get("chunks", [])
         ])
         
+        # If no RAG context or very limited context, this is likely off-topic
+        if not rag_context or len(rag_context.strip()) < 50:
+            reply = (
+                "I'm a Loan Assistant and can only help with loan-related queries such as:\n"
+                "- Loan applications and eligibility\n"
+                "- EMI calculations\n"
+                "- Interest rates and fees\n"
+                "- Policy and documentation questions\n\n"
+                "I don't have information about that topic. Please ask me about loans or banking services!"
+            )
+            decision = {
+                "status": "OFF_TOPIC",
+                "reasoning": ["No relevant policy information found for this query"],
+                "confidence": 0.85
+            }
+            return reply, decision
+
         chain = PromptTemplate.from_template(policy_prompt) | llm
         reply = chain.invoke({
             "message": user_message,
