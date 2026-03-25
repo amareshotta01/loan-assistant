@@ -1,7 +1,16 @@
 from langchain_community.chat_models import ChatOllama
 from langchain_core.prompts import PromptTemplate
 
-llm = ChatOllama(model="mistral", temperature=0.2)
+llm = ChatOllama(model="mistral", temperature=0.0)  # Set to 0 for deterministic responses
+
+
+def _is_emi_calculation(user_message: str, tool_results: dict) -> bool:
+    """Check if this is primarily an EMI calculation request."""
+    emi_keywords = ["emi", "calculate", "monthly payment", "installment"]
+    message_lower = user_message.lower()
+    has_emi_request = any(kw in message_lower for kw in emi_keywords)
+    has_emi_result = tool_results.get("emi", 0) > 0
+    return has_emi_request and has_emi_result
 
 
 def _is_policy_question(tool_results: dict, rag_data: dict) -> bool:
@@ -24,31 +33,62 @@ def process(user_message: str, tool_results: dict, rag_data: dict, chat_history:
     """
     DECISION AGENT
     --------------
-    Handles two types of responses:
-    1. Policy Questions: Uses RAG data to answer informational queries
-    2. Loan Decisions: Uses tool results to make approval/rejection decisions
+    Handles three types of responses:
+    1. EMI Calculations: Direct calculation results with minimal LLM involvement
+    2. Policy Questions: Uses RAG data to answer informational queries
+    3. Loan Decisions: Uses tool results to make approval/rejection decisions
     """
     
-    # Determine if this is a policy question or loan decision
+    # CHECK 1: Is this an EMI calculation request? Handle with direct response (no hallucination)
+    if _is_emi_calculation(user_message, tool_results):
+        emi = tool_results.get("emi", 0)
+        principal = tool_results.get("principal", 0)
+        tenure = tool_results.get("tenure_used", 36)
+        interest_rate = tool_results.get("interest_rate_used", 12.5)
+        
+        # Direct factual response - no LLM generation to avoid hallucination
+        reply = f"""Based on your request, here are the EMI calculation results:
+
+**Loan Details:**
+- Principal Amount: Rs. {principal:,.2f}
+- Interest Rate: {interest_rate}% per annum
+- Tenure: {tenure} months ({tenure // 12} years {tenure % 12} months)
+
+**Calculated EMI: Rs. {emi:,.2f} per month**
+
+Total Amount Payable: Rs. {(emi * tenure):,.2f}
+Total Interest: Rs. {(emi * tenure - principal):,.2f}
+
+Note: This is a standard reducing balance EMI calculation. Actual EMI may vary based on processing fees and other charges."""
+        
+        decision = {
+            "status": "CALCULATION_COMPLETE",
+            "reasoning": [f"EMI calculated: Rs. {emi:,.2f}/month for {tenure} months at {interest_rate}%"],
+            "confidence": 1.0  # 100% confidence as this is math, not prediction
+        }
+        return reply, decision
+    
+    # CHECK 2: Is this a policy question?
     is_policy = _is_policy_question(tool_results, rag_data)
     
     if is_policy:
-        # POLICY QUESTION MODE: Answer based on RAG context
+        # POLICY QUESTION MODE: Answer based on RAG context - STRICT NO HALLUCINATION
         policy_prompt = """
-        You are a helpful Bank Policy Assistant.
+        You are a STRICT Bank Policy Assistant. You ONLY answer from the provided context.
         
-        Conversation History: {history}
         User's Question: {message}
         
-        Relevant Bank Policy Information:
+        POLICY DOCUMENTS (Your ONLY source of truth):
         {rag}
         
-        INSTRUCTIONS:
-        1. Answer the user's question based ONLY on the policy information provided above.
-        2. Be concise, professional, and helpful.
-        3. If the information is not in the context, say "I don't have information about that in our policy documents."
-        4. Format any monetary values appropriately (use $ for amounts mentioned in the policy).
-        5. Do NOT make up information that is not in the context.
+        CRITICAL RULES - FOLLOW EXACTLY:
+        1. ONLY use information that is EXPLICITLY stated in the POLICY DOCUMENTS above.
+        2. If the answer is NOT in the context, respond: "I don't have information about that in our policy documents. Please contact customer support for more details."
+        3. DO NOT invent, assume, or add ANY information not in the context.
+        4. DO NOT mention websites, portals, phone numbers, or contact details unless they are in the context.
+        5. Quote specific policy text when possible.
+        6. Keep your response concise and factual.
+        7. Use Rs. for Indian Rupee amounts.
         """
         
         # Format RAG chunks for the prompt
@@ -59,7 +99,6 @@ def process(user_message: str, tool_results: dict, rag_data: dict, chat_history:
         
         chain = PromptTemplate.from_template(policy_prompt) | llm
         reply = chain.invoke({
-            "history": chat_history,
             "message": user_message,
             "rag": rag_context if rag_context else "No relevant policy information found."
         }).content

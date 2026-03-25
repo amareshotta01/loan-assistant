@@ -79,18 +79,65 @@ def process(user_message: str, current_state: dict) -> dict:
             "route_to": "rag" if intent == "policy_question" else "general"
         }
     
-    # Step 3: For calculations, check if we have enough data
+    # Step 3: For calculations - MUST extract values from the message first
     if intent == "calculation":
-        return {
-            "intent": intent,
-            "loan_amount": current_state.get("loan_amount"),
-            "income_monthly": current_state.get("income_monthly"),
-            "tenure_months": current_state.get("tenure_months"),
-            "age": current_state.get("age"),
-            "credit_score": current_state.get("credit_score"),
-            "missing_fields": [],  # Let tool agent handle with whatever data is available
-            "route_to": "tools"
-        }
+        calc_prompt = """
+        You are a Financial Data Extractor. Extract numeric values from the user's calculation request.
+        
+        User Message: {message}
+        Current Known Data: {current_state}
+        
+        EXTRACTION RULES:
+        - "10 lakh" or "10L" = 1000000, "50 lakh" = 5000000, "1 crore" = 10000000
+        - "5 years" = 60 months, "10 years" = 120 months, "3 years" = 36 months
+        - Interest rate: look for percentage like "10%", "12.5%", "8.5%"
+        - If a value exists in current_state, keep it unless the user provides a new one
+        
+        Respond ONLY in JSON format:
+        {{
+            "loan_amount": (number in rupees, e.g., 1000000 for 10 lakhs, or null if not mentioned),
+            "interest_rate": (annual percentage as number, e.g., 10 for 10%, or null - default will be 12.5),
+            "tenure_months": (number of months, e.g., 60 for 5 years, or null),
+            "income_monthly": (number or null),
+            "age": (number or null),
+            "credit_score": (number or null)
+        }}
+        """
+        
+        chain = PromptTemplate.from_template(calc_prompt) | llm
+        response = chain.invoke({"message": user_message, "current_state": json.dumps(current_state)})
+        
+        try:
+            cleaned_content = response.content.strip()
+            if cleaned_content.startswith("```json"):
+                cleaned_content = cleaned_content[7:]
+            if cleaned_content.endswith("```"):
+                cleaned_content = cleaned_content[:-3]
+            extracted = json.loads(cleaned_content.strip())
+            
+            # Merge with current state (new values override old)
+            return {
+                "intent": intent,
+                "loan_amount": extracted.get("loan_amount") or current_state.get("loan_amount"),
+                "income_monthly": extracted.get("income_monthly") or current_state.get("income_monthly"),
+                "tenure_months": extracted.get("tenure_months") or current_state.get("tenure_months"),
+                "interest_rate": extracted.get("interest_rate") or 12.5,  # Default interest rate
+                "age": extracted.get("age") or current_state.get("age"),
+                "credit_score": extracted.get("credit_score") or current_state.get("credit_score"),
+                "missing_fields": [],
+                "route_to": "tools"
+            }
+        except:
+            return {
+                "intent": intent,
+                "loan_amount": current_state.get("loan_amount"),
+                "income_monthly": current_state.get("income_monthly"),
+                "tenure_months": current_state.get("tenure_months"),
+                "age": current_state.get("age"),
+                "credit_score": current_state.get("credit_score"),
+                "missing_fields": [],
+                "route_to": "tools"
+            }
     
     # Step 4: For loan applications - collect financial data
     prompt = """
