@@ -24,6 +24,8 @@ class DecisionModel(BaseModel):
     # - GREETING: General greeting/help response
     # - PENDING: Awaiting complete information
     # - CALCULATION_COMPLETE: EMI or other calculation completed successfully
+    # - OFF_TOPIC: Message not related to financial/loan services
+    # - BLOCKED: Message blocked by guardrails (security threat, harmful content)
     status: str = "NEED_MORE_INFO"
     reasoning: List[str] = []
     confidence: float = 0.0

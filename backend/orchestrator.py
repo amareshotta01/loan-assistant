@@ -22,10 +22,48 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
         safe_response = guardrails_adapter.get_safe_response(verdict_in.get("categories", ["unknown"])[0] if verdict_in.get("categories") else "unknown")
         return _build_safe_response(session_id, safe_response, verdict_in, t0)
     safe_message = verdict_in.get("redacted_text", message)
+    
+    # Extract intent hints for routing decisions
+    intent_hints = verdict_in.get("intent_hints", {})
+    is_financial = intent_hints.get("is_financial", False)
+    is_policy_query = intent_hints.get("is_policy_query", False)
+    is_calculation = intent_hints.get("is_calculation", False)
+    intent_confidence = intent_hints.get("confidence", 0.0)
+    
     agent_trace.append({"step": 1, "agent": "Guardrails", "action": "Scanned Input", "data": verdict_in})
 
     # 2. MEMORY: Load state
     state = memory_store.load(session_id)
+
+    # 2A. INTENT VALIDATION: Check if message is relevant to financial/loan context
+    # This prevents off-topic messages from using cached loan data
+    if not is_financial and not is_policy_query and not is_calculation and intent_confidence == 0.0:
+        # Message has no financial context - check if it's a greeting or completely off-topic
+        lower_message = safe_message.lower().strip()
+        greeting_patterns = ["hello", "hi", "hey", "help", "what can you do", "thank", "thanks", "bye", "goodbye"]
+        is_greeting = any(pattern in lower_message for pattern in greeting_patterns)
+        
+        if not is_greeting and len(lower_message) > 10:
+            # This is an off-topic message that's not a greeting - block it
+            off_topic_response = (
+                "I'm a Loan Assistant designed to help with:\n"
+                "- Loan applications and eligibility checks\n"
+                "- EMI calculations\n"
+                "- Policy questions about interest rates, fees, and requirements\n\n"
+                "Your message doesn't appear to be related to these topics. "
+                "How can I assist you with your banking or loan needs?"
+            )
+            agent_trace.append({
+                "step": 2, 
+                "agent": "Intent Validator", 
+                "action": "Blocked Off-Topic Query", 
+                "data": {"reason": "No financial context detected", "intent_hints": intent_hints}
+            })
+            return _build_response(
+                session_id, off_topic_response, 
+                DecisionModel(status="OFF_TOPIC"), ToolResultsModel(), RagMetadataModel(), 
+                verdict_in, state, t0, None, agent_trace
+            )
 
     # AGENT 1: INTAKE AGENT (with Intent Classification)
     extracted_data = intake_agent.process(safe_message, state["entities"])
