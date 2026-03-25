@@ -25,12 +25,34 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
     
     # Extract intent hints for routing decisions
     intent_hints = verdict_in.get("intent_hints", {})
+    is_security_threat = intent_hints.get("is_security_threat", False)
     is_financial = intent_hints.get("is_financial", False)
     is_policy_query = intent_hints.get("is_policy_query", False)
     is_calculation = intent_hints.get("is_calculation", False)
     intent_confidence = intent_hints.get("confidence", 0.0)
+    threat_reason = intent_hints.get("threat_reason")
     
     agent_trace.append({"step": 1, "agent": "Guardrails", "action": "Scanned Input", "data": verdict_in})
+    
+    # SECURITY CHECK: Block LLM-detected security threats
+    if is_security_threat:
+        security_response = (
+            "Your message has been blocked due to detected security concerns. "
+            "This system is designed to help with loan applications and financial queries only. "
+            "Any attempts to manipulate, exploit, or compromise this system are logged and monitored. "
+            "Please use this service responsibly for legitimate banking inquiries."
+        )
+        agent_trace.append({
+            "step": 2, 
+            "agent": "Intent Validator", 
+            "action": "Blocked Security Threat", 
+            "data": {"reason": threat_reason, "intent_hints": intent_hints}
+        })
+        return _build_response(
+            session_id, security_response, 
+            DecisionModel(status="BLOCKED"), ToolResultsModel(), RagMetadataModel(), 
+            verdict_in, {"entities": {}}, t0, None, agent_trace
+        )
 
     # 2. MEMORY: Load state
     state = memory_store.load(session_id)
