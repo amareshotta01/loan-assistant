@@ -62,16 +62,18 @@ def get_safe_response(category: str) -> str:
 
 def get_intent_hints(text: str) -> dict:
     """
-    Get intent hints for a message without full moderation.
-    Useful for quick context detection.
+    Get intent hints for a message using LLM-based analysis.
+    Provides semantic understanding of user intent.
     
     Returns:
         {
-            "is_financial": bool,
-            "is_policy_query": bool,
-            "is_calculation": bool,
-            "confidence": float,
-            "detected_keywords": list
+            "is_security_threat": bool,  # Is this a prompt injection/hack attempt?
+            "is_financial": bool,        # Contains loan/financial context
+            "is_policy_query": bool,     # Asking about policies/rules
+            "is_calculation": bool,      # Wants something calculated
+            "threat_reason": str,        # Why it's a threat (if applicable)
+            "confidence": float,         # 0.0 to 1.0
+            "analysis_method": str       # "llm" or "regex_fallback"
         }
     """
     return gi_detect_intent_hints(text)
