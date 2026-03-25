@@ -227,38 +227,43 @@ def _normalize_text(text: str) -> str:
 
 def _agent_decide(text: str) -> str:
     """
-    AGENT DECISION FUNCTION
-    -----------------------
-    Reads the text and autonomously decides which category it belongs to.
-    This is the 'brain' of the guardrail agent.
+    AGENT DECISION FUNCTION (LLM-POWERED)
+    -------------------------------------
+    Uses LLM-based intent analysis for security threats,
+    and regex for other harmful content (profanity, hate speech, etc.).
 
     Decision Priority:
-    1. security_threat (highest - system security first)
-    2. self_harm       (human safety)
-    3. hate_speech
-    4. abuse
-    5. profanity
-    6. pii             (redact but allow)
+    1. security_threat (LLM-based - semantic understanding)
+    2. self_harm       (regex - keyword based)
+    3. hate_speech     (regex - keyword based)
+    4. abuse           (regex - keyword based)
+    5. profanity       (regex - keyword based)
+    6. pii             (regex - pattern matching)
     7. clean           (pass through)
     """
-    # Normalize the text to catch evasion attempts
+    # STEP 1: Use LLM for security threat detection (prompt injection, jailbreaks)
+    # This provides semantic understanding instead of fragile regex
+    llm_intent = analyze_intent_with_llm(text)
+    if llm_intent.get("is_security_threat", False):
+        logger.info(f"LLM detected security threat: {llm_intent.get('threat_reason')}")
+        return "security_threat"
+    
+    # STEP 2: Use regex for other harmful content (profanity, hate, abuse, self-harm)
+    # These are keyword-based and work well with regex
     normalized = _normalize_text(text)
     original_lower = text.lower()
-    
-    # Check both original and normalized versions
     texts_to_check = [original_lower, normalized]
     
-    for category in ["security_threat", "self_harm", "hate_speech", "abuse", "profanity"]:
+    for category in ["self_harm", "hate_speech", "abuse", "profanity"]:
         for pattern in HARMFUL_PATTERNS[category]:
             for check_text in texts_to_check:
                 try:
                     if re.search(pattern, check_text, re.IGNORECASE):
                         return category
                 except re.error:
-                    # If pattern fails, skip it
                     continue
 
-    # Check PII on original text (not normalized)
+    # STEP 3: Check PII on original text
     for pii_type, (pattern, _) in PII_PATTERNS.items():
         try:
             if re.search(pattern, text, re.IGNORECASE):
