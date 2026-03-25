@@ -40,6 +40,7 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
     if extracted_data.get("tenure_months"): state["entities"]["tenure_months"] = extracted_data["tenure_months"]
     if extracted_data.get("age"): state["entities"]["age"] = extracted_data["age"]
     if extracted_data.get("credit_score"): state["entities"]["credit_score"] = extracted_data["credit_score"]
+    if extracted_data.get("interest_rate"): state["entities"]["interest_rate"] = extracted_data["interest_rate"]
     
     # ============================================================
     # INTENT-BASED ROUTING
@@ -74,13 +75,34 @@ async def handle_chat(session_id: str, message: str, metadata: dict = None) -> C
         memory_store.save(session_id, state, safe_message, reply)
         return _build_response(session_id, reply, decision_model, ToolResultsModel(), RagMetadataModel(), verdict_in, state, t0, None, agent_trace)
     
-    # ROUTE 3: LOAN APPLICATION -> Collect data, then process
+    # ROUTE 3: CALCULATIONS -> Go directly to Tool Agent (skip RAG for math)
+    if route_to == "tools" or intent == "calculation":
+        # Run Tool Agent directly with extracted values
+        tool_results_dict = tool_agent.process(state["entities"])
+        tool_model = ToolResultsModel(**tool_results_dict)
+        agent_trace.append({"step": 3, "agent": "Tool Agent", "action": "Ran Financial Calculations", "data": tool_results_dict})
+        
+        # Decision agent will generate structured response for calculations
+        chat_history = state.get("summary", "No history yet.")
+        reply, decision_dict = decision_agent.process(safe_message, tool_results_dict, {"used_rag": False, "chunks": []}, chat_history)
+        decision_model = DecisionModel(**decision_dict)
+        agent_trace.append({"step": 4, "agent": "Decision Agent", "action": "Generated Calculation Response", "data": decision_dict})
+        
+        # Output guardrails
+        verdict_out = guardrails_adapter.moderate_output(reply)
+        if verdict_out["action"] != "ALLOW":
+            reply = verdict_out.get("safe_text", "Output redacted for safety.")
+        
+        memory_store.save(session_id, state, safe_message, reply)
+        return _build_response(session_id, reply, decision_model, tool_model, RagMetadataModel(), verdict_in, state, t0, verdict_out, agent_trace)
+    
+    # ROUTE 4: LOAN APPLICATION -> Collect data, then process
     if extracted_data.get("missing_fields"):
         reply = f"To process your loan application, I still need the following information: {', '.join(extracted_data['missing_fields'])}."
         decision = DecisionModel(status="NEED_MORE_INFO")
         return _build_response(session_id, reply, decision, ToolResultsModel(), RagMetadataModel(), verdict_in, state, t0, agent_trace=agent_trace)
 
-    # ROUTE 4: CALCULATIONS / FULL LOAN PROCESSING
+    # ROUTE 5: FULL LOAN PROCESSING (with all data available)
     # AGENT 2: RETRIEVAL AGENT (for additional context)
     rag_data = retrieval_agent.process(safe_message)
     rag_model = RagMetadataModel(used=rag_data["used_rag"], top_k=len(rag_data["chunks"]), chunks=rag_data["chunks"])
